@@ -5,7 +5,10 @@ namespace WellenEditor;
 
 public sealed class AudioDocument
 {
+    private const int MaxUndoSteps = 20;
+
     private readonly Stack<float[]> undoHistory = new();
+    private readonly Stack<float[]> redoHistory = new();
 
     private AudioDocument(string sourcePath, float[] samples, int channels, int sampleRate)
     {
@@ -22,6 +25,15 @@ public sealed class AudioDocument
     public int FrameCount => Samples.Length / Channels;
     public TimeSpan Duration => TimeSpan.FromSeconds(FrameCount / (double)SampleRate);
     public bool CanUndo => undoHistory.Count > 0;
+    public bool CanRedo => redoHistory.Count > 0;
+
+    public static AudioDocument FromSamples(float[] samples, int channels, int sampleRate, string? sourcePath = null)
+    {
+        ArgumentNullException.ThrowIfNull(samples);
+        if (samples.Length == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
+        if (samples.Length % channels != 0) throw new ArgumentException("Die Sample-Anzahl ist kein Vielfaches der Kanalanzahl.", nameof(samples));
+        return new AudioDocument(sourcePath ?? string.Empty, samples, channels, sampleRate);
+    }
 
     public static AudioDocument Load(string path)
     {
@@ -37,7 +49,7 @@ public sealed class AudioDocument
         return new AudioDocument(path, samples.ToArray(), reader.WaveFormat.Channels, reader.WaveFormat.SampleRate);
     }
 
-    public ISampleProvider CreateProvider(int startFrame, int frames)
+    public ISampleProvider CreateSampleProvider(int startFrame, int frames)
     {
         var boundedStart = Math.Clamp(startFrame, 0, FrameCount);
         var boundedFrames = Math.Clamp(frames, 0, FrameCount - boundedStart);
@@ -97,7 +109,16 @@ public sealed class AudioDocument
 
     public void Undo()
     {
-        if (undoHistory.TryPop(out var restored)) Samples = restored;
+        if (!undoHistory.TryPop(out var restored)) return;
+        redoHistory.Push(Samples);
+        Samples = restored;
+    }
+
+    public void Redo()
+    {
+        if (!redoHistory.TryPop(out var restored)) return;
+        undoHistory.Push(Samples);
+        Samples = restored;
     }
 
     public void Normalize(Selection? selection)
@@ -133,17 +154,70 @@ public sealed class AudioDocument
         return (frames.StartSample * Channels, frames.EndSample * Channels);
     }
 
-    public void SaveAsWave(string path)
+    public void SaveAsWave(string path) => SaveAsWave(path, 32);
+
+    public void SaveAsWave(string path, int bitsPerSample)
     {
-        using var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels));
-        writer.WriteSamples(Samples, 0, Samples.Length);
+        var format = bitsPerSample switch
+        {
+            32 => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
+            24 => new WaveFormat(SampleRate, 24, Channels),
+            16 => new WaveFormat(SampleRate, 16, Channels),
+            _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, " Unterstützt werden 16, 24 und 32 Bit.")
+        };
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new WaveFileWriter(tempPath, format))
+            {
+                switch (bitsPerSample)
+                {
+                    case 32: writer.WriteSamples(Samples, 0, Samples.Length); break;
+                    case 24: WritePcm24(writer, Samples); break;
+                    case 16: WritePcm16(writer, Samples); break;
+                }
+            }
+            if (File.Exists(path)) File.Replace(tempPath, path, null);
+            else File.Move(tempPath, path);
+        }
+        catch
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+            throw;
+        }
+    }
+
+    private static void WritePcm16(Stream writer, float[] samples)
+    {
+        var data = new byte[samples.Length * 2];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var value = (short)Math.Clamp(MathF.Round(samples[index] * 32767f), -32768f, 32767f);
+            data[index * 2] = (byte)value;
+            data[index * 2 + 1] = (byte)(value >> 8);
+        }
+        writer.Write(data);
+    }
+
+    private static void WritePcm24(Stream writer, float[] samples)
+    {
+        var data = new byte[samples.Length * 3];
+        for (var index = 0; index < samples.Length; index++)
+        {
+            var value = (int)Math.Clamp(MathF.Round(samples[index] * 8388607f), -8388608f, 8388607f);
+            data[index * 3] = (byte)value;
+            data[index * 3 + 1] = (byte)(value >> 8);
+            data[index * 3 + 2] = (byte)(value >> 16);
+        }
+        writer.Write(data);
     }
 
     private void SaveUndo()
     {
         undoHistory.Push(Samples);
-        if (undoHistory.Count <= 20) return;
-        var retained = undoHistory.Take(20).Reverse().ToArray();
+        redoHistory.Clear();
+        if (undoHistory.Count <= MaxUndoSteps) return;
+        var retained = undoHistory.Take(MaxUndoSteps).Reverse().ToArray();
         undoHistory.Clear();
         foreach (var state in retained) undoHistory.Push(state);
     }

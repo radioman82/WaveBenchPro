@@ -15,7 +15,11 @@
     <DebugType>embedded</DebugType>
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
+  <PropertyGroup>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
   <ItemGroup>
+    <Compile Include="**\*.cs" Exclude="tests\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
     <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 </Project>

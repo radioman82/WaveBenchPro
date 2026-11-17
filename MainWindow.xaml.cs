@@ -60,9 +60,14 @@ public partial class MainWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         if (document is null) return;
-        var dialog = new SaveFileDialog { Filter = "WAV-Audio|*.wav", FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}_bearbeitet.wav" };
+        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}_bearbeitet.wav" };
         if (dialog.ShowDialog(this) != true) return;
-        try { document.SaveAsWave(dialog.FileName); HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)}"; }
+        try
+        {
+            var bits = dialog.FilterIndex switch { 1 => 16, 3 => 32, _ => 24 };
+            document.SaveAsWave(dialog.FileName, bits);
+            HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)} ({bits}-Bit)";
+        }
         catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht gespeichert werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
@@ -177,6 +182,7 @@ public partial class MainWindow : Window
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e) { if (document?.CanUndo == true) { StopPlayback(); document.Undo(); RefreshAfterEdit(); } }
+    private void Redo_Click(object sender, RoutedEventArgs e) { if (document?.CanRedo == true) { StopPlayback(); document.Redo(); RefreshAfterEdit(); } }
     private void SelectAll_Click(object sender, RoutedEventArgs e) => Waveform.SelectAll();
     private void ZoomIn_Click(object sender, RoutedEventArgs e) => Waveform.ZoomIn();
     private void ZoomOut_Click(object sender, RoutedEventArgs e) => Waveform.ZoomOut();
@@ -196,17 +202,25 @@ public partial class MainWindow : Window
     private void RefreshAfterEdit(int? cursor = null)
     {
         if (document is null) return;
-        Waveform.SetAudio(document.Samples, document.Channels, document.SampleRate); if (cursor.HasValue) Waveform.SetCursor(cursor.Value);
+        Waveform.UpdateAudio(document.Samples, document.Channels, document.SampleRate); if (cursor.HasValue) Waveform.SetCursor(cursor.Value);
         DurationText.Text = $"Länge: {FormatTime(document.Duration)}"; ViewRangeText.Text = $"0:00.000 – {FormatTime(document.Duration)}"; UpdateSelectionText();
+        UpdateUndoRedoState();
     }
 
     private void Waveform_SelectionChanged(object? sender, EventArgs e) => UpdateSelectionText();
     private void UpdateSelectionText()
     {
-        if (document is null || Waveform.GetSelection() is not Selection selection) { StartText.Content = "Start: —"; EndText.Content = "Ende: —"; SelectionText.Content = "Auswahl: —"; return; }
+        if (document is null || Waveform.GetSelection() is not Selection selection) { StartText.Content = "Start: —"; EndText.Content = "Ende: —"; SelectionText.Content = "Auswahl: —"; SampleText.Content = $"Samples: {Waveform.CursorSample:N0} · keine Auswahl"; return; }
         StartText.Content = $"Start: {FormatTime(TimeSpan.FromSeconds(selection.StartSample / (double)document.SampleRate))}";
         EndText.Content = $"Ende: {FormatTime(TimeSpan.FromSeconds(selection.EndSample / (double)document.SampleRate))}";
         SelectionText.Content = $"Auswahl: {FormatTime(TimeSpan.FromSeconds(selection.Length / (double)document.SampleRate))}";
+        SampleText.Content = $"Samples: {selection.StartSample:N0} – {selection.EndSample:N0} ({selection.Length:N0})";
+    }
+
+    private void UpdateUndoRedoState()
+    {
+        if (document is null) { HintText.Content = "Keine Datei geladen."; return; }
+        HintText.Content = document.CanUndo ? "Rückgängig möglich." : "Keine Rückgängig-Schritte.";
     }
 
     private void AudioHardware_Click(object sender, RoutedEventArgs e) { var dialog = new AudioHardwareWindow { Owner = this }; if (dialog.ShowDialog() == true) HintText.Content = "Audio-Hardwarezuordnung übernommen."; }
@@ -216,10 +230,29 @@ public partial class MainWindow : Window
 
     private void MainWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if ((e.Key == System.Windows.Input.Key.Space || e.Key == System.Windows.Input.Key.Tab) && document is not null) { Play_Click(this, new RoutedEventArgs()); e.Handled = true; }
-        else if (e.Key == System.Windows.Input.Key.Delete) DeleteSelection();
-        else if (e.Key == System.Windows.Input.Key.A && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control) Waveform.SelectAll();
-        else if (e.Key == System.Windows.Input.Key.Z && System.Windows.Input.Keyboard.Modifiers == System.Windows.Input.ModifierKeys.Control) Undo_Click(this, new RoutedEventArgs());
+        if (document is null) return;
+        var modifiers = System.Windows.Input.Keyboard.Modifiers;
+        var key = e.Key;
+
+        if ((key == System.Windows.Input.Key.Space || key == System.Windows.Input.Key.Tab)) { Play_Click(this, new RoutedEventArgs()); e.Handled = true; }
+        else if (key == System.Windows.Input.Key.Delete) DeleteSelection();
+        else if (key == System.Windows.Input.Key.A && modifiers == System.Windows.Input.ModifierKeys.Control) Waveform.SelectAll();
+        else if (key == System.Windows.Input.Key.Z && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
+        {
+            if (modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift)) Redo_Click(this, new RoutedEventArgs());
+            else Undo_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+        }
+        else if (key == System.Windows.Input.Key.Y && modifiers == System.Windows.Input.ModifierKeys.Control) { Redo_Click(this, new RoutedEventArgs()); e.Handled = true; }
+        else if (key == System.Windows.Input.Key.Left || key == System.Windows.Input.Key.Right)
+        {
+            var step = key == System.Windows.Input.Key.Right ? 1 : -1;
+            if (modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control)) step *= 100;
+            Waveform.MoveCursor(step, modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift));
+            e.Handled = true;
+        }
+        else if (key == System.Windows.Input.Key.Home) { Waveform.SetCursor(0); e.Handled = true; }
+        else if (key == System.Windows.Input.Key.End) { Waveform.SetCursor(document.FrameCount); e.Handled = true; }
     }
 
     private static string FormatTime(TimeSpan duration) => duration.TotalHours >= 1 ? duration.ToString(@"h\:mm\:ss\.fff") : duration.ToString(@"m\:ss\.fff");

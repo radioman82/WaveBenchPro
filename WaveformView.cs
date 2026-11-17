@@ -29,13 +29,26 @@ public sealed class WaveformView : FrameworkElement
 
     public void SetAudio(float[] audioSamples, int audioChannels, int audioSampleRate)
     {
+        UpdateAudio(audioSamples, audioChannels, audioSampleRate);
+        viewportStart = 0;
+        viewportFrames = FrameCount;
+        verticalZoom = 1;
+        selectionStart = null;
+        selectionEnd = null;
+        InvalidateVisual();
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Wechselt die Audiodaten, behält aber Zoom, Viewport und Auswahl bei.</summary>
+    public void UpdateAudio(float[] audioSamples, int audioChannels, int audioSampleRate)
+    {
         samples = audioSamples;
         channels = audioChannels;
         sampleRate = audioSampleRate;
-        viewportStart = 0;
-        viewportFrames = FrameCount;
-        selectionStart = null;
-        selectionEnd = null;
+        viewportStart = Math.Clamp(viewportStart, 0, FrameCount);
+        viewportFrames = Math.Clamp(viewportFrames, 1, Math.Max(1, FrameCount - viewportStart));
+        selectionStart = selectionStart.HasValue ? Math.Clamp(selectionStart.Value, 0, FrameCount) : null;
+        selectionEnd = selectionEnd.HasValue ? Math.Clamp(selectionEnd.Value, 0, FrameCount) : null;
         InvalidateVisual();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
     }
@@ -53,8 +66,40 @@ public sealed class WaveformView : FrameworkElement
         var cursor = Math.Clamp(frame, 0, FrameCount);
         selectionStart = cursor;
         selectionEnd = cursor;
+        EnsureCursorVisible(cursor);
         InvalidateVisual();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>Bewegt den Cursor sample-genau; mit extend wird die Auswahl verändert.</summary>
+    public void MoveCursor(int deltaFrames, bool extend)
+    {
+        if (FrameCount == 0) return;
+        if (extend)
+        {
+            var anchor = selectionStart ?? CursorSample;
+            var end = selectionEnd ?? CursorSample;
+            var target = Math.Clamp(end + deltaFrames, 0, FrameCount);
+            selectionStart = anchor;
+            selectionEnd = target;
+            EnsureCursorVisible(target);
+        }
+        else
+        {
+            var target = Math.Clamp(CursorSample + deltaFrames, 0, FrameCount);
+            selectionStart = target;
+            selectionEnd = target;
+            EnsureCursorVisible(target);
+        }
+        InvalidateVisual();
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void EnsureCursorVisible(int frame)
+    {
+        if (frame < viewportStart) viewportStart = frame;
+        else if (frame > viewportStart + viewportFrames) viewportStart = frame - viewportFrames;
+        viewportStart = Math.Clamp(viewportStart, 0, Math.Max(0, FrameCount - viewportFrames));
     }
 
     public void SelectAll()
@@ -159,7 +204,7 @@ public sealed class WaveformView : FrameworkElement
         }
         var anchor = FrameAt(e.GetPosition(this).X);
         var factor = e.Delta > 0 ? 0.6 : 1.65;
-        var nextFrames = Math.Clamp((int)(viewportFrames * factor), Math.Min(200, FrameCount), FrameCount);
+        var nextFrames = Math.Clamp((int)(viewportFrames * factor), 1, FrameCount);
         var relative = (anchor - viewportStart) / (double)Math.Max(1, viewportFrames);
         viewportStart = Math.Clamp(anchor - (int)(relative * nextFrames), 0, Math.Max(0, FrameCount - nextFrames));
         viewportFrames = nextFrames;
@@ -171,7 +216,7 @@ public sealed class WaveformView : FrameworkElement
     {
         if (FrameCount == 0) return;
         var anchor = viewportStart + viewportFrames / 2;
-        var nextFrames = Math.Clamp((int)(viewportFrames * factor), Math.Min(200, FrameCount), FrameCount);
+        var nextFrames = Math.Clamp((int)(viewportFrames * factor), 1, FrameCount);
         viewportStart = Math.Clamp(anchor - nextFrames / 2, 0, Math.Max(0, FrameCount - nextFrames));
         viewportFrames = nextFrames;
         InvalidateVisual();
@@ -314,7 +359,7 @@ public sealed class WaveformView : FrameworkElement
     private int FrameAt(double x)
     {
         var plot = GetPlotBounds();
-        return Math.Clamp(viewportStart + (int)(Math.Clamp(x - plot.Left, 0, plot.Width) / plot.Width * viewportFrames), 0, FrameCount);
+        return Math.Clamp(viewportStart + (int)Math.Round(Math.Clamp(x - plot.Left, 0, plot.Width) / plot.Width * viewportFrames), 0, FrameCount);
     }
     private double XAt(int frame, Rect bounds) => bounds.Left + (frame - viewportStart) / (double)Math.Max(1, viewportFrames) * bounds.Width;
 }
