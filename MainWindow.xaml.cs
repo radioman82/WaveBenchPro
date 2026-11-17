@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private bool loopSelection;
     private int loopStartFrame;
     private int loopFrameCount;
+    private readonly RecordingEngine recorder = new();
 
     public MainWindow()
     {
@@ -29,7 +30,7 @@ public partial class MainWindow : Window
         DragOver += (_, e) => e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenAudio(files[0]); };
         PreviewKeyDown += MainWindow_PreviewKeyDown;
-        Closing += (_, _) => StopPlayback();
+        Closing += (_, _) => { StopPlayback(); recorder.Dispose(); };
         playbackTimer.Tick += PlaybackTimer_Tick;
         Loaded += (_, _) =>
         {
@@ -60,13 +61,22 @@ public partial class MainWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         if (document is null) return;
-        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}_bearbeitet.wav" };
+        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav|MP3 192 kBit/s|*.mp3|MP3 320 kBit/s|*.mp3", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}_bearbeitet.wav" };
         if (dialog.ShowDialog(this) != true) return;
         try
         {
-            var bits = dialog.FilterIndex switch { 1 => 16, 3 => 32, _ => 24 };
-            document.SaveAsWave(dialog.FileName, bits);
-            HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)} ({bits}-Bit)";
+            if (dialog.FilterIndex >= 4)
+            {
+                var bitRate = dialog.FilterIndex == 5 ? 320 : 192;
+                document.SaveAsMp3(dialog.FileName, bitRate);
+                HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)} (MP3 {bitRate} kBit/s)";
+            }
+            else
+            {
+                var bits = dialog.FilterIndex switch { 1 => 16, 3 => 32, _ => 24 };
+                document.SaveAsWave(dialog.FileName, bits);
+                HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)} ({bits}-Bit)";
+            }
         }
         catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht gespeichert werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -125,6 +135,82 @@ public partial class MainWindow : Window
         isPlaying = false;
         playbackClock.Stop(); playbackTimer.Stop();
         DisposePlayer();
+        if (!recorder.IsRecording) ResetLevel();
+    }
+
+    private void Record_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (recorder.IsRecording)
+            {
+                var finished = recorder.Finish();
+                recorder.LevelChanged -= Recorder_LevelChanged;
+                RecordButton.Content = "●";
+                RecordButton.ToolTip = "Aufnahme starten/stoppen (Strg+R)";
+                ResetLevel();
+                if (finished is not { } recorded || recorded.Samples.Length == 0)
+                {
+                    HintText.Content = "Aufnahme leer – keine Audiodaten übernommen.";
+                    return;
+                }
+
+                if (document is null)
+                {
+                    document = AudioDocument.FromSamples(recorded.Samples, recorded.Channels, recorded.SampleRate);
+                    Waveform.SetAudio(document.Samples, document.Channels, document.SampleRate);
+                    FileNameText.Text = "Aufnahme";
+                    FileList.Items.Clear();
+                    FileList.Items.Add(new ListBoxItem { Content = "Aufnahme" });
+                    HintText.Content = "Aufnahme übernommen.";
+                }
+                else
+                {
+                    var insertAt = Waveform.CursorSample;
+                    StopPlayback();
+                    document.Insert(insertAt, recorded);
+                    RefreshAfterEdit(insertAt + recorded.Samples.Length / recorded.Channels);
+                    HintText.Content = $"Aufnahme an Position {insertAt:N0} eingefügt.";
+                }
+
+                FormatText.Text = $"{document.SampleRate:N0} Hz · {ChannelText(document.Channels)} · 32-bit float";
+                DurationText.Text = $"Länge: {FormatTime(document.Duration)}";
+                ViewRangeText.Text = $"0:00.000 – {FormatTime(document.Duration)}";
+                UpdateSelectionText();
+                UpdateUndoRedoState();
+                return;
+            }
+
+            StopPlayback();
+            recorder.LevelChanged += Recorder_LevelChanged;
+            recorder.Start(AudioHardwareSettings.InputDeviceId);
+            RecordButton.Content = "■";
+            RecordButton.ToolTip = "Aufnahme stoppen (Strg+R)";
+            HintText.Content = $"Aufnahme läuft ({recorder.CaptureFormat?.SampleRate:N0} Hz, {recorder.CaptureFormat?.Channels} Kanäle)…";
+        }
+        catch (Exception exception)
+        {
+            recorder.Cancel();
+            recorder.LevelChanged -= Recorder_LevelChanged;
+            RecordButton.Content = "●";
+            ResetLevel();
+            MessageBox.Show(this, $"Die Aufnahme konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void Recorder_LevelChanged(object? sender, float peak) => Dispatcher.BeginInvoke(new Action(() => SetLevel(peak)));
+
+    private void SetLevel(float peak)
+    {
+        var db = peak <= 0f ? -60 : (float)Math.Clamp(20 * Math.Log10(peak), -60, 0);
+        LevelMeter.Value = db;
+        LevelText.Content = $"Pegel: {db:0.0} dB";
+    }
+
+    private void ResetLevel()
+    {
+        LevelMeter.Value = -60;
+        LevelText.Content = "Pegel: —";
     }
 
     private void StartPlayback(int start, int count)
@@ -156,6 +242,11 @@ public partial class MainWindow : Window
         var playedFrames = (int)(playbackClock.Elapsed.TotalSeconds * document.SampleRate);
         var frame = Math.Min(playbackStartFrame + playedFrames, playbackStartFrame + playbackFrameCount);
         Waveform.SetCursor(frame);
+        var sampleStart = Math.Clamp(frame * document.Channels, 0, document.Samples.Length);
+        var sampleEnd = Math.Min(document.Samples.Length, sampleStart + document.Channels * 1024);
+        var peak = 0f;
+        for (var index = sampleStart; index < sampleEnd; index++) peak = Math.Max(peak, Math.Abs(document.Samples[index]));
+        SetLevel(peak);
         HintText.Content = $"▶ Wiedergabe: {FormatTime(TimeSpan.FromSeconds(frame / (double)document.SampleRate))}";
     }
 
@@ -178,7 +269,7 @@ public partial class MainWindow : Window
     {
         if (document is null || AudioClipboard.Current is not AudioSelectionData audio) return;
         try { StopPlayback(); var point = Waveform.CursorSample; document.Insert(point, audio); RefreshAfterEdit(point + audio.Samples.Length / audio.Channels); }
-        catch (InvalidOperationException exception) { MessageBox.Show(this, exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (Exception exception) { MessageBox.Show(this, $"Einfügen fehlgeschlagen: {exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Information); }
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e) { if (document?.CanUndo == true) { StopPlayback(); document.Undo(); RefreshAfterEdit(); } }
@@ -230,9 +321,15 @@ public partial class MainWindow : Window
 
     private void MainWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
-        if (document is null) return;
         var modifiers = System.Windows.Input.Keyboard.Modifiers;
         var key = e.Key;
+        if (key == System.Windows.Input.Key.R && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
+        {
+            Record_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+        if (document is null) return;
 
         if ((key == System.Windows.Input.Key.Space || key == System.Windows.Input.Key.Tab)) { Play_Click(this, new RoutedEventArgs()); e.Handled = true; }
         else if (key == System.Windows.Input.Key.Delete) DeleteSelection();

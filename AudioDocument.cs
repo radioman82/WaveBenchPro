@@ -1,3 +1,4 @@
+using NAudio.Lame;
 using NAudio.Wave;
 using System.IO;
 
@@ -94,16 +95,14 @@ public sealed class AudioDocument
 
     public void Insert(int frame, AudioSelectionData audio)
     {
-        if (audio.Channels != Channels || audio.SampleRate != SampleRate)
-        {
-            throw new InvalidOperationException("Die Zwischenablage hat ein anderes Audioformat.");
-        }
+        // Fremde Formate werden kontrolliert angepasst statt abgelehnt.
+        var compatible = AudioFormatConverter.Convert(audio, Channels, SampleRate);
         SaveUndo();
         var insertionPoint = Math.Clamp(frame, 0, FrameCount) * Channels;
-        var edited = new float[Samples.Length + audio.Samples.Length];
+        var edited = new float[Samples.Length + compatible.Samples.Length];
         Array.Copy(Samples, 0, edited, 0, insertionPoint);
-        Array.Copy(audio.Samples, 0, edited, insertionPoint, audio.Samples.Length);
-        Array.Copy(Samples, insertionPoint, edited, insertionPoint + audio.Samples.Length, Samples.Length - insertionPoint);
+        Array.Copy(compatible.Samples, 0, edited, insertionPoint, compatible.Samples.Length);
+        Array.Copy(Samples, insertionPoint, edited, insertionPoint + compatible.Samples.Length, Samples.Length - insertionPoint);
         Samples = edited;
     }
 
@@ -176,6 +175,27 @@ public sealed class AudioDocument
                     case 24: WritePcm24(writer, Samples); break;
                     case 16: WritePcm16(writer, Samples); break;
                 }
+            }
+            if (File.Exists(path)) File.Replace(tempPath, path, null);
+            else File.Move(tempPath, path);
+        }
+        catch
+        {
+            if (File.Exists(tempPath)) File.Delete(tempPath);
+            throw;
+        }
+    }
+
+    /// <summary>Sicherer MP3-Export über eine temporäre Datei (CBR, 32–320 kBit/s).</summary>
+    public void SaveAsMp3(string path, int bitRate = 192)
+    {
+        if (bitRate < 32 || bitRate > 320) throw new ArgumentOutOfRangeException(nameof(bitRate), bitRate, "Erlaubt sind 32 bis 320 kBit/s.");
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new LameMP3FileWriter(tempPath, new WaveFormat(SampleRate, 16, Channels), bitRate))
+            {
+                WritePcm16(writer, Samples);
             }
             if (File.Exists(path)) File.Replace(tempPath, path, null);
             else File.Move(tempPath, path);

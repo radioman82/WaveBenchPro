@@ -180,4 +180,45 @@ public sealed class AudioDocumentTests
         }
         finally { File.Delete(path); }
     }
+
+    [Fact]
+    public void InsertConvertsForeignRecordingFormatBeforeAppending()
+    {
+        var document = CreateDocument();
+        var originalFrames = document.FrameCount;
+        var recording = new AudioSelectionData(new[] { 1f, -1f, 1f, -1f }, Channels: 1, SampleRate: 22050);
+
+        document.Insert(100, recording);
+
+        document.Channels.Should().Be(2);
+        document.SampleRate.Should().Be(44100);
+        // 4 Mono-Frames bei 22,05 kHz ergeben 8 Frames bei 44,1 kHz.
+        document.FrameCount.Should().Be(originalFrames + 8);
+    }
+
+    [Fact]
+    public void SaveAsMp3WritesNonEmptyMpegStream()
+    {
+        var document = CreateDocument();
+        var path = Path.Combine(Path.GetTempPath(), $"wavebenchmp3_{Guid.NewGuid():N}.mp3");
+        try
+        {
+            document.SaveAsMp3(path, 128);
+
+            var bytes = File.ReadAllBytes(path);
+            bytes.Length.Should().BeGreaterThan(1000);
+            var frameSync = bytes[0] == 0xFF && (bytes[1] & 0xE0) == 0xE0;
+            var id3 = bytes[0] == (byte)'I' && bytes[1] == (byte)'D' && bytes[2] == (byte)'3';
+            (frameSync || id3).Should().BeTrue();
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void SaveAsMp3RejectsInvalidBitrate()
+    {
+        var document = CreateDocument();
+        var act = () => document.SaveAsMp3("x.mp3", 999);
+        act.Should().Throw<ArgumentOutOfRangeException>();
+    }
 }
