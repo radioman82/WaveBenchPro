@@ -1,4 +1,4 @@
-# WaveEdit Pro
+# WaveBench Pro
 
 Ein Windows-Audioeditor mit klassischer Edit-View-Oberfläche. Die Bedienung orientiert sich an den direkten Wellenform-Editoren der frühen 2000er Jahre und konzentriert sich auf die Einzelspurbearbeitung.
 
@@ -25,7 +25,7 @@ dotnet run
 dotnet publish -c Release
 ```
 
-Die einzelne portable Datei liegt anschließend unter `bin\Release\net9.0-windows\win-x64\publish\WaveEditPro.exe`.
+Die einzelne portable Datei liegt anschließend unter `bin\Release\net9.0-windows\win-x64\publish\WaveBenchPro.exe`.
 
 ## Bedienung
 

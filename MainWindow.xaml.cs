@@ -54,7 +54,7 @@ public partial class MainWindow : Window
             DurationText.Text = $"Länge: {FormatTime(document.Duration)}"; ViewRangeText.Text = $"0:00.000 – {FormatTime(document.Duration)}";
             HintText.Content = "Bereit. Mit der Maus einen Bereich markieren."; UpdateSelectionText();
         }
-        catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht geöffnet werden.\n\n{exception.Message}", "WellenEditor", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht geöffnet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -63,7 +63,7 @@ public partial class MainWindow : Window
         var dialog = new SaveFileDialog { Filter = "WAV-Audio|*.wav", FileName = $"{Path.GetFileNameWithoutExtension(document.SourcePath)}_bearbeitet.wav" };
         if (dialog.ShowDialog(this) != true) return;
         try { document.SaveAsWave(dialog.FileName); HintText.Content = $"Gespeichert: {Path.GetFileName(dialog.FileName)}"; }
-        catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht gespeichert werden.\n\n{exception.Message}", "WellenEditor", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception exception) { MessageBox.Show(this, $"Die Datei konnte nicht gespeichert werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private void Play_Click(object sender, RoutedEventArgs e)
@@ -80,7 +80,7 @@ public partial class MainWindow : Window
             StartPlayback(start, count);
             HintText.Content = selection.HasValue ? "Schleifenwiedergabe der Auswahl." : "Wiedergabe ab Cursorposition.";
         }
-        catch (Exception exception) { StopPlayback(); MessageBox.Show(this, $"Die Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WellenEditor", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception exception) { StopPlayback(); MessageBox.Show(this, $"Die Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
     private static IWavePlayer CreatePlayer()
@@ -173,7 +173,7 @@ public partial class MainWindow : Window
     {
         if (document is null || AudioClipboard.Current is not AudioSelectionData audio) return;
         try { StopPlayback(); var point = Waveform.CursorSample; document.Insert(point, audio); RefreshAfterEdit(point + audio.Samples.Length / audio.Channels); }
-        catch (InvalidOperationException exception) { MessageBox.Show(this, exception.Message, "WellenEditor", MessageBoxButton.OK, MessageBoxImage.Information); }
+        catch (InvalidOperationException exception) { MessageBox.Show(this, exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Information); }
     }
 
     private void Undo_Click(object sender, RoutedEventArgs e) { if (document?.CanUndo == true) { StopPlayback(); document.Undo(); RefreshAfterEdit(); } }
@@ -210,7 +210,7 @@ public partial class MainWindow : Window
     }
 
     private void AudioHardware_Click(object sender, RoutedEventArgs e) { var dialog = new AudioHardwareWindow { Owner = this }; if (dialog.ShowDialog() == true) HintText.Content = "Audio-Hardwarezuordnung übernommen."; }
-    private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "WellenEditor\nKlassische Einzelspuren-Bearbeitung für Windows 11", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+    private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "WaveBench Pro\nKlassische Einzelspuren-Bearbeitung für Windows 11", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     private void FileList_SelectionChanged(object sender, SelectionChangedEventArgs e) { }
 
