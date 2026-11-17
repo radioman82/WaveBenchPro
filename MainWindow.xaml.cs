@@ -1,4 +1,4 @@
-using Microsoft.Win32;
+﻿using Microsoft.Win32;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using System.Diagnostics;
@@ -18,10 +18,16 @@ public partial class MainWindow : Window
     private readonly Stopwatch playbackClock = new();
     private int playbackStartFrame;
     private int playbackFrameCount;
+    private int lastMeterFrame;
+    // Puffergröße des WasapiOut: Anzeige und Cursor werden um diese Latenz
+    // gegen das tatsächlich hörbare Signal zurückgerechnet.
+    private const int OutputLatencyMs = 100;
     private bool loopSelection;
     private int loopStartFrame;
     private int loopFrameCount;
     private readonly RecordingEngine recorder = new();
+    private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
+    private bool isScanningVst;
 
     public MainWindow()
     {
@@ -36,6 +42,7 @@ public partial class MainWindow : Window
         {
             var startupFile = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
             if (startupFile is not null) OpenAudio(startupFile);
+            ScanVstEffects();
         };
     }
 
@@ -104,7 +111,7 @@ public partial class MainWindow : Window
         var output = string.IsNullOrWhiteSpace(AudioHardwareSettings.OutputDeviceId)
             ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
             : enumerator.GetDevice(AudioHardwareSettings.OutputDeviceId);
-        return new WasapiOut(output, AudioClientShareMode.Shared, false, 100);
+        return new WasapiOut(output, AudioClientShareMode.Shared, false, OutputLatencyMs);
     }
 
     private void Player_PlaybackStopped(object? sender, StoppedEventArgs e)
@@ -145,7 +152,7 @@ public partial class MainWindow : Window
             if (recorder.IsRecording)
             {
                 var finished = recorder.Finish();
-                recorder.LevelChanged -= Recorder_LevelChanged;
+                recorder.LevelsChanged -= Recorder_LevelChanged;
                 RecordButton.Content = "●";
                 RecordButton.ToolTip = "Aufnahme starten/stoppen (Strg+R)";
                 ResetLevel();
@@ -182,7 +189,7 @@ public partial class MainWindow : Window
             }
 
             StopPlayback();
-            recorder.LevelChanged += Recorder_LevelChanged;
+            recorder.LevelsChanged += Recorder_LevelChanged;
             recorder.Start(AudioHardwareSettings.InputDeviceId);
             RecordButton.Content = "■";
             RecordButton.ToolTip = "Aufnahme stoppen (Strg+R)";
@@ -191,40 +198,35 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             recorder.Cancel();
-            recorder.LevelChanged -= Recorder_LevelChanged;
+            recorder.LevelsChanged -= Recorder_LevelChanged;
             RecordButton.Content = "●";
             ResetLevel();
             MessageBox.Show(this, $"Die Aufnahme konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
-    private void Recorder_LevelChanged(object? sender, float peak) => Dispatcher.BeginInvoke(new Action(() => SetLevel(peak)));
+    private void Recorder_LevelChanged(object? sender, float[] peaks) => Dispatcher.BeginInvoke(new Action(() => SetLevels(peaks)));
 
-    private void SetLevel(float peak)
-    {
-        var db = peak <= 0f ? -60 : (float)Math.Clamp(20 * Math.Log10(peak), -60, 0);
-        LevelMeter.Value = db;
-        LevelText.Content = $"Pegel: {db:0.0} dB";
-    }
+    private void SetLevels(float[] peaks) => StereoMeter.SetLevels(peaks);
 
-    private void ResetLevel()
-    {
-        LevelMeter.Value = -60;
-        LevelText.Content = "Pegel: —";
-    }
+    private void ResetLevel() => StereoMeter.Reset();
+
+    private void MeterToggle_Click(object sender, RoutedEventArgs e) =>
+        MeterPanel.Visibility = MeterMenuItem.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
 
     private void StartPlayback(int start, int count)
     {
         DisposePlayer();
         playbackStartFrame = start;
         playbackFrameCount = count;
+        lastMeterFrame = start;
         Waveform.SetCursor(start);
         player = CreatePlayer();
         player.Init(document!.CreateWaveProvider(start, count));
         player.PlaybackStopped += Player_PlaybackStopped;
+        playbackClock.Restart();
         player.Play();
         isPlaying = true;
-        playbackClock.Restart();
         playbackTimer.Start();
     }
 
@@ -239,14 +241,25 @@ public partial class MainWindow : Window
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
     {
         if (document is null || !isPlaying) return;
-        var playedFrames = (int)(playbackClock.Elapsed.TotalSeconds * document.SampleRate);
+        // Die hörbare Position liegt um die Ausgangspuffer-Latenz hinter der Wanduhr.
+        var elapsed = Math.Max(0d, playbackClock.Elapsed.TotalSeconds - OutputLatencyMs / 1000d);
+        var playedFrames = (int)(elapsed * document.SampleRate);
         var frame = Math.Min(playbackStartFrame + playedFrames, playbackStartFrame + playbackFrameCount);
         Waveform.SetCursor(frame);
-        var sampleStart = Math.Clamp(frame * document.Channels, 0, document.Samples.Length);
-        var sampleEnd = Math.Min(document.Samples.Length, sampleStart + document.Channels * 1024);
-        var peak = 0f;
-        for (var index = sampleStart; index < sampleEnd; index++) peak = Math.Max(peak, Math.Abs(document.Samples[index]));
-        SetLevel(peak);
+
+        // Peaks aus dem Intervall seit dem letzten Tick: lückenlos, ohne
+        // Vorausschau auf noch nicht gehörte Samples.
+        var channels = document.Channels;
+        var from = Math.Clamp(lastMeterFrame * channels, 0, document.Samples.Length);
+        var to = Math.Clamp(Math.Max(frame, lastMeterFrame) * channels, from, document.Samples.Length);
+        var peaks = new float[channels];
+        for (var index = from; index < to; index++)
+        {
+            var channel = (index - from) % channels;
+            peaks[channel] = Math.Max(peaks[channel], Math.Abs(document.Samples[index]));
+        }
+        lastMeterFrame = Math.Max(lastMeterFrame, frame);
+        SetLevels(peaks);
         HintText.Content = $"▶ Wiedergabe: {FormatTime(TimeSpan.FromSeconds(frame / (double)document.SampleRate))}";
     }
 
@@ -290,6 +303,63 @@ public partial class MainWindow : Window
         StopPlayback(); effect(Waveform.GetSelection()); RefreshAfterEdit(); HintText.Content = message;
     }
 
+    private void ScanVst_Click(object sender, RoutedEventArgs e) => ScanVstEffects();
+
+    private async void ScanVstEffects()
+    {
+        if (isScanningVst) return;
+        isScanningVst = true;
+        HintText.Content = "VST3-Plugins werden gescannt …";
+        try
+        {
+            var effects = await Task.Run(() => Vst3EffectCatalog.Scan());
+            vstEffects = effects;
+            VstEffectsList.ItemsSource = effects;
+            HintText.Content = effects.Count == 0
+                ? "Keine VST3-Effekte gefunden."
+                : $"{effects.Count} VST3-Effekte gefunden. Doppelklick wendet sie an.";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, $"Der VST3-Scan ist fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            HintText.Content = "VST3-Scan fehlgeschlagen.";
+        }
+        finally { isScanningVst = false; }
+    }
+
+    private void VstEffectsList_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (VstEffectsList.SelectedItem is not Vst3EffectDescriptor descriptor) return;
+        ApplyVstEffect(descriptor);
+    }
+
+    private void ApplyVstEffect(Vst3EffectDescriptor descriptor)
+    {
+        if (document is null)
+        {
+            MessageBox.Show(this, "Bitte zuerst eine Audiodatei öffnen.", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        var selection = Waveform.GetSelection();
+        var start = selection?.StartSample ?? 0;
+        var frames = selection?.Length ?? document.FrameCount;
+        if (frames <= 0) return;
+        StopPlayback();
+        HintText.Content = $"VST3-Effekt '{descriptor.Name}' wird gerendert …";
+        try
+        {
+            var rendered = Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames);
+            document.ReplaceFrames(start, rendered, frames);
+            RefreshAfterEdit(start);
+            HintText.Content = $"VST3-Effekt '{descriptor.Name}' angewendet.";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, $"Der VST3-Effekt konnte nicht angewendet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            HintText.Content = "VST3-Effekt fehlgeschlagen.";
+        }
+    }
+
     private void RefreshAfterEdit(int? cursor = null)
     {
         if (document is null) return;
@@ -326,6 +396,13 @@ public partial class MainWindow : Window
         if (key == System.Windows.Input.Key.R && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
         {
             Record_Click(this, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+        if (key == System.Windows.Input.Key.M && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
+        {
+            MeterMenuItem.IsChecked = !MeterMenuItem.IsChecked;
+            MeterToggle_Click(this, new RoutedEventArgs());
             e.Handled = true;
             return;
         }

@@ -12,5 +12,3 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
 Write-Host "Build OK: $Out\wavebenchpro.exe"
-Copy-Item (Join-Path $Out "wavebenchpro.exe") (Join-Path $Out "WellenEditor.exe") -Force
-Write-Host "Alias OK: $Out\WellenEditor.exe"

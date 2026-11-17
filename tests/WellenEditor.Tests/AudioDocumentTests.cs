@@ -1,4 +1,4 @@
-using NAudio.Wave;
+﻿using NAudio.Wave;
 using System.IO;
 using WellenEditor;
 using Xunit;
@@ -23,7 +23,7 @@ public sealed class AudioDocumentTests
         var provider = document.CreateSampleProvider(startFrame, frames);
         while (offset < buffer.Length)
         {
-            var read = provider.Read(buffer, offset, buffer.Length - offset);
+            var read = provider.Read(buffer.AsSpan(offset, buffer.Length - offset));
             if (read <= 0) break;
             offset += read;
         }

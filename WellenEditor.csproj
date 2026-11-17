@@ -20,7 +20,8 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="**\*.cs" Exclude="tests\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
-    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="NAudio" Version="3.3.0" />
+    <PackageReference Include="NAudio.Vst3" Version="3.3.0" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" />
   </ItemGroup>
 </Project>

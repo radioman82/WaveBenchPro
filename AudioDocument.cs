@@ -1,6 +1,7 @@
-using NAudio.Lame;
+﻿using NAudio.Lame;
 using NAudio.Wave;
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace WellenEditor;
 
@@ -42,7 +43,7 @@ public sealed class AudioDocument
         var samples = new List<float>();
         var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
         int read;
-        while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+        while ((read = reader.Read(buffer.AsSpan())) > 0)
         {
             samples.AddRange(buffer.AsSpan(0, read).ToArray());
         }
@@ -72,6 +73,16 @@ public sealed class AudioDocument
         var extracted = new float[length];
         Array.Copy(Samples, selection.StartSample * Channels, extracted, 0, length);
         return new AudioSelectionData(extracted, Channels, SampleRate);
+    }
+
+    /// <summary>Ersetzt einen Sample-Bereich durch vorab gerendertes Audio (z. B. VST3-Effekt).</summary>
+    public void ReplaceFrames(int startFrame, float[] processed, int frames)
+    {
+        if (frames <= 0) return;
+        if (startFrame < 0 || startFrame + frames > FrameCount) throw new ArgumentOutOfRangeException(nameof(startFrame));
+        if (processed.Length < frames * Channels) throw new ArgumentException("Zu wenige Samples für den Ersetzungsbereich.", nameof(processed));
+        SaveUndo();
+        Array.Copy(processed, 0, Samples, startFrame * Channels, frames * Channels);
     }
 
     public void Delete(Selection selection)
@@ -276,6 +287,14 @@ internal sealed class ArraySampleProvider : ISampleProvider
         position += available;
         return available;
     }
+
+    public int Read(Span<float> buffer)
+    {
+        var available = Math.Min(buffer.Length, data.Length - position);
+        data.AsSpan(position, available).CopyTo(buffer);
+        position += available;
+        return available;
+    }
 }
 
 internal sealed class ArrayWaveProvider : IWaveProvider
@@ -298,6 +317,14 @@ internal sealed class ArrayWaveProvider : IWaveProvider
     {
         var available = Math.Min(count, endBytePosition - bytePosition);
         Buffer.BlockCopy(data, bytePosition, buffer, offset, available);
+        bytePosition += available;
+        return available;
+    }
+
+    public int Read(Span<byte> buffer)
+    {
+        var available = Math.Min(buffer.Length, endBytePosition - bytePosition);
+        MemoryMarshal.AsBytes(data.AsSpan()).Slice(bytePosition, available).CopyTo(buffer);
         bytePosition += available;
         return available;
     }

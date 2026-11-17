@@ -20,7 +20,7 @@ public sealed class RecordingEngine : IDisposable
     public bool IsRecording => isRecording;
     public WaveFormat? CaptureFormat => format;
     public float LastPeak { get; private set; }
-    public event EventHandler<float>? LevelChanged;
+    public event EventHandler<float[]>? LevelsChanged;
 
     public void Start(string? deviceId)
     {
@@ -80,10 +80,15 @@ public sealed class RecordingEngine : IDisposable
         recorded.Write(e.Buffer, 0, e.BytesRecorded);
 
         var block = AudioFormatConverter.Decode(e.Buffer, e.BytesRecorded, format);
-        var peak = 0f;
-        foreach (var sample in block) peak = Math.Max(peak, Math.Abs(sample));
-        LastPeak = peak;
-        LevelChanged?.Invoke(this, peak);
+        var channels = Math.Max(1, format.Channels);
+        var peaks = new float[channels];
+        for (var sample = 0; sample < block.Length; sample++)
+        {
+            var channel = sample % channels;
+            peaks[channel] = Math.Max(peaks[channel], Math.Abs(block[sample]));
+        }
+        LastPeak = peaks.Length > 0 ? peaks.Max() : 0f;
+        LevelsChanged?.Invoke(this, peaks);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e) => stopped.Set();

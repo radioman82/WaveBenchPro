@@ -15,6 +15,4 @@ if not exist "%DOTNET%" (
 
 echo.
 echo Build OK: %OUT%\wavebenchpro.exe
-copy /Y "%OUT%\wavebenchpro.exe" "%OUT%\WellenEditor.exe" >nul
-echo Alias OK: %OUT%\WellenEditor.exe
 exit /b 0
