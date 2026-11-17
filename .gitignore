@@ -1,0 +1,8 @@
+bin/
+obj/
+.tooling/
+Release/
+Release-*/
+portable-*/
+playback-verification/
+*.wav
