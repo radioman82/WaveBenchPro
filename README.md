@@ -1,17 +1,28 @@
 # WaveBench Pro
 
-Ein Windows-Audioeditor mit klassischer Edit-View-Oberfläche. Die Bedienung orientiert sich an den direkten Wellenform-Editoren der frühen 2000er Jahre und konzentriert sich auf die Einzelspurbearbeitung.
+WaveBench Pro ist ein portabler Windows-Audioeditor für die direkte Einzelspurbearbeitung. Die Bedienung orientiert sich an klassischen Wellenform-Editoren: Datei öffnen, Bereich markieren, bearbeiten, exportieren.
+
+## About
+
+Aktueller Stand v0.4: Neben Undo/Redo, Aufnahme und WAV-/MP3-Export sind native Effekte mit Presets und Vorschau sowie VST3-Offline-Rendering enthalten. Die Oberfläche ist dunkel und auf Lesbarkeit getrimmt; beim Schließen oder Entfernen von Dateien mit ungespeicherten Änderungen fragt das Programm nach. Entwickelt als .NET-9-WPF-Anwendung mit NAudio.
 
 ## Enthalten
 
 - Menüleiste für Datei, Bearbeiten, Ansicht, Effekte und Optionen
 - Organizer, Symbolleisten, Zeit- und Auswahlstatus
-- Wellenformansicht mit Bereichsauswahl und Zoom
-- Leertaste oder Tab startet und stoppt die Wiedergabe
-- Wiedergabe, Ausschneiden, Kopieren, Einfügen, Löschen und Rückgängig
-- Normalisieren, Einblenden und Ausblenden
+- Wellenformansicht mit Bereichsauswahl, Zoom und gelber Markierung
+- Wiedergabe und Aufnahme mit Pegelanzeige
+- Ausschneiden, Kopieren, Einfügen, Löschen, Rückgängig und Wiederholen
+- Sicherheitsdialoge: Speichern, Schließen ohne Speichern oder Abbrechen
+- Native Effekte mit Presets und Vorschau: Verstärken, Normalisieren, Ein-/Ausblenden, EQ, Hoch-/Tiefpass, Kompressor und Limiter
+- VST3-Scan und Offline-Rendering auf Auswahl oder gesamte Datei
+- Export als WAV (PCM 16/24 Bit, 32-Bit-Float) und MP3
 - Auswahl der aktiven Windows-Wiedergabe- und Aufnahmegeräte unter `Optionen > Audio-Hardware`
-- WAV-Export
+- Dunkle, lesbare Menüs und Dialoge
+
+## VST3
+
+VST3-Effekte werden über `Effekte > VST3-Effekte neu scannen` erkannt und per Doppelklick offline auf die Auswahl bzw. die ganze Datei angewendet. Instrumente werden übersprungen. Plugin-Oberflächen, Parametersteuerung, Presets und eine Insertkette sind noch nicht enthalten; die Plugins laufen mit ihrem Default-Zustand.
 
 ## Starten während der Entwicklung
 
