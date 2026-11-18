@@ -18,10 +18,14 @@ public sealed class AudioDocument
         Samples = samples;
         Channels = channels;
         SampleRate = sampleRate;
+        DisplayName = string.IsNullOrWhiteSpace(sourcePath) ? string.Empty : Path.GetFileName(sourcePath);
+        IsModified = false;
     }
 
-    public string SourcePath { get; }
+    public string SourcePath { get; private set; }
     public float[] Samples { get; private set; }
+    public string DisplayName { get; set; }
+    public bool IsModified { get; private set; }
     public int Channels { get; }
     public int SampleRate { get; }
     public int FrameCount => Samples.Length / Channels;
@@ -39,7 +43,8 @@ public sealed class AudioDocument
 
     public static AudioDocument Load(string path)
     {
-        using var reader = new AudioFileReader(path);
+        var fullPath = Path.GetFullPath(path);
+        using var reader = new AudioFileReader(fullPath);
         var samples = new List<float>();
         var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
         int read;
@@ -48,7 +53,7 @@ public sealed class AudioDocument
             samples.AddRange(buffer.AsSpan(0, read).ToArray());
         }
         if (samples.Count == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
-        return new AudioDocument(path, samples.ToArray(), reader.WaveFormat.Channels, reader.WaveFormat.SampleRate);
+        return new AudioDocument(fullPath, samples.ToArray(), reader.WaveFormat.Channels, reader.WaveFormat.SampleRate);
     }
 
     public ISampleProvider CreateSampleProvider(int startFrame, int frames)
@@ -145,6 +150,18 @@ public sealed class AudioDocument
     public void FadeIn(Selection? selection) => ApplyFade(selection, false);
     public void FadeOut(Selection? selection) => ApplyFade(selection, true);
 
+    /// <summary>Wendet einen nativen Effekt auf die Auswahl oder den gesamten Clip an.</summary>
+    public void ApplyNativeEffect(Selection? selection, NativeEffectKind kind, EffectSettings settings)
+    {
+        var (start, end) = GetRange(selection);
+        if (start >= end) return;
+        var block = new float[end - start];
+        Array.Copy(Samples, start, block, 0, block.Length);
+        var processed = NativeEffects.Process(settings, block, Channels, SampleRate, kind);
+        SaveUndo();
+        Array.Copy(processed, 0, Samples, start, processed.Length);
+    }
+
     private void ApplyFade(Selection? selection, bool fadeOut)
     {
         var frames = selection ?? new Selection(0, FrameCount);
@@ -168,31 +185,40 @@ public sealed class AudioDocument
 
     public void SaveAsWave(string path, int bitsPerSample)
     {
-        var format = bitsPerSample switch
-        {
-            32 => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
-            24 => new WaveFormat(SampleRate, 24, Channels),
-            16 => new WaveFormat(SampleRate, 16, Channels),
-            _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, " Unterstützt werden 16, 24 und 32 Bit.")
-        };
         var tempPath = path + ".tmp";
         try
         {
-            using (var writer = new WaveFileWriter(tempPath, format))
+            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
             {
-                switch (bitsPerSample)
-                {
-                    case 32: writer.WriteSamples(Samples, 0, Samples.Length); break;
-                    case 24: WritePcm24(writer, Samples); break;
-                    case 16: WritePcm16(writer, Samples); break;
-                }
+                WriteSamples(writer, Samples, 0, Samples.Length, bitsPerSample);
             }
-            if (File.Exists(path)) File.Replace(tempPath, path, null);
-            else File.Move(tempPath, path);
+            CommitTempFile(tempPath, path);
         }
         catch
         {
-            if (File.Exists(tempPath)) File.Delete(tempPath);
+            DeleteTempFile(tempPath);
+            throw;
+        }
+    }
+
+    /// <summary>Exportiert exakt den angegebenen Frame-Bereich, ohne das Dokument zu verändern.</summary>
+    public void SaveRangeAsWave(string path, int startFrame, int frameCount, int bitsPerSample)
+    {
+        ValidateRange(startFrame, frameCount);
+        var offset = startFrame * Channels;
+        var count = frameCount * Channels;
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
+            {
+                WriteSamples(writer, Samples, offset, count, bitsPerSample);
+            }
+            CommitTempFile(tempPath, path);
+        }
+        catch
+        {
+            DeleteTempFile(tempPath);
             throw;
         }
     }
@@ -200,42 +226,108 @@ public sealed class AudioDocument
     /// <summary>Sicherer MP3-Export über eine temporäre Datei (CBR, 32–320 kBit/s).</summary>
     public void SaveAsMp3(string path, int bitRate = 192)
     {
-        if (bitRate < 32 || bitRate > 320) throw new ArgumentOutOfRangeException(nameof(bitRate), bitRate, "Erlaubt sind 32 bis 320 kBit/s.");
+        ValidateBitRate(bitRate);
         var tempPath = path + ".tmp";
         try
         {
             using (var writer = new LameMP3FileWriter(tempPath, new WaveFormat(SampleRate, 16, Channels), bitRate))
             {
-                WritePcm16(writer, Samples);
+                WritePcm16(writer, Samples, 0, Samples.Length);
             }
-            if (File.Exists(path)) File.Replace(tempPath, path, null);
-            else File.Move(tempPath, path);
+            CommitTempFile(tempPath, path);
         }
         catch
         {
-            if (File.Exists(tempPath)) File.Delete(tempPath);
+            DeleteTempFile(tempPath);
             throw;
         }
     }
 
-    private static void WritePcm16(Stream writer, float[] samples)
+    /// <summary>Exportiert nur den markierten Bereich als MP3.</summary>
+    public void SaveRangeAsMp3(string path, int startFrame, int frameCount, int bitRate = 192)
     {
-        var data = new byte[samples.Length * 2];
-        for (var index = 0; index < samples.Length; index++)
+        ValidateRange(startFrame, frameCount);
+        ValidateBitRate(bitRate);
+        var offset = startFrame * Channels;
+        var count = frameCount * Channels;
+        var tempPath = path + ".tmp";
+        try
         {
-            var value = (short)Math.Clamp(MathF.Round(samples[index] * 32767f), -32768f, 32767f);
+            using (var writer = new LameMP3FileWriter(tempPath, new WaveFormat(SampleRate, 16, Channels), bitRate))
+            {
+                WritePcm16(writer, Samples, offset, count);
+            }
+            CommitTempFile(tempPath, path);
+        }
+        catch
+        {
+            DeleteTempFile(tempPath);
+            throw;
+        }
+    }
+
+    private WaveFormat CreateWaveFormat(int bitsPerSample) => bitsPerSample switch
+    {
+        32 => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
+        24 => new WaveFormat(SampleRate, 24, Channels),
+        16 => new WaveFormat(SampleRate, 16, Channels),
+        _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, "Unterstützt werden 16, 24 und 32 Bit.")
+    };
+
+    private void ValidateRange(int startFrame, int frameCount)
+    {
+        if (startFrame < 0) throw new ArgumentOutOfRangeException(nameof(startFrame));
+        if (frameCount < 0 || startFrame + frameCount > FrameCount) throw new ArgumentOutOfRangeException(nameof(frameCount));
+    }
+
+    private static void ValidateBitRate(int bitRate)
+    {
+        if (bitRate < 32 || bitRate > 320) throw new ArgumentOutOfRangeException(nameof(bitRate), bitRate, "Erlaubt sind 32 bis 320 kBit/s.");
+    }
+
+    private static void CommitTempFile(string tempPath, string path)
+    {
+        if (File.Exists(path)) File.Replace(tempPath, path, null);
+        else File.Move(tempPath, path);
+    }
+
+    private static void DeleteTempFile(string tempPath)
+    {
+        if (File.Exists(tempPath)) File.Delete(tempPath);
+    }
+
+    private static void WriteSamples(WaveFileWriter writer, float[] samples, int offset, int count, int bitsPerSample)
+    {
+        switch (bitsPerSample)
+        {
+            case 32: writer.WriteSamples(samples, offset, count); break;
+            case 24: WritePcm24(writer, samples, offset, count); break;
+            case 16: WritePcm16(writer, samples, offset, count); break;
+        }
+    }
+
+    private static void WritePcm16(Stream writer, float[] samples) => WritePcm16(writer, samples, 0, samples.Length);
+
+    private static void WritePcm16(Stream writer, float[] samples, int offset, int count)
+    {
+        var data = new byte[count * 2];
+        for (var index = 0; index < count; index++)
+        {
+            var value = (short)Math.Clamp(MathF.Round(samples[offset + index] * 32767f), -32768f, 32767f);
             data[index * 2] = (byte)value;
             data[index * 2 + 1] = (byte)(value >> 8);
         }
         writer.Write(data);
     }
 
-    private static void WritePcm24(Stream writer, float[] samples)
+    private static void WritePcm24(Stream writer, float[] samples) => WritePcm24(writer, samples, 0, samples.Length);
+
+    private static void WritePcm24(Stream writer, float[] samples, int offset, int count)
     {
-        var data = new byte[samples.Length * 3];
-        for (var index = 0; index < samples.Length; index++)
+        var data = new byte[count * 3];
+        for (var index = 0; index < count; index++)
         {
-            var value = (int)Math.Clamp(MathF.Round(samples[index] * 8388607f), -8388608f, 8388607f);
+            var value = (int)Math.Clamp(MathF.Round(samples[offset + index] * 8388607f), -8388608f, 8388607f);
             data[index * 3] = (byte)value;
             data[index * 3 + 1] = (byte)(value >> 8);
             data[index * 3 + 2] = (byte)(value >> 16);
@@ -243,9 +335,24 @@ public sealed class AudioDocument
         writer.Write(data);
     }
 
+    /// <summary>Markiert das Dokument als geändert (z. B. neue, ungespeicherte Aufnahme oder Ausschnitt).</summary>
+    public void MarkModified() => IsModified = true;
+
+    /// <summary>Setzt nach „Speichern unter“ den neuen Quelldateipfad und markiert das Dokument als gespeichert.</summary>
+    public void UpdateSourcePath(string path)
+    {
+        SourcePath = path;
+        DisplayName = Path.GetFileName(path);
+        IsModified = false;
+    }
+
+    /// <summary>Markiert das Dokument nach einem erfolgreichen Speichervorgang als sauber.</summary>
+    public void MarkSaved() => IsModified = false;
+
     private void SaveUndo()
     {
-        undoHistory.Push(Samples);
+        IsModified = true;
+        undoHistory.Push((float[])Samples.Clone());
         redoHistory.Clear();
         if (undoHistory.Count <= MaxUndoSteps) return;
         var retained = undoHistory.Take(MaxUndoSteps).Reverse().ToArray();

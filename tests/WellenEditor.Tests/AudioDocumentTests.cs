@@ -31,6 +31,16 @@ public sealed class AudioDocumentTests
     }
 
     [Fact]
+    public void DeleteMarksDocumentAsModified()
+    {
+        var document = CreateDocument();
+
+        document.Delete(new Selection(100, 200));
+
+        document.IsModified.Should().BeTrue();
+    }
+
+    [Fact]
     public void DeleteRemovesOnlySelectionAndUndoRestoresPreviousSamples()
     {
         var document = CreateDocument();
@@ -158,6 +168,48 @@ public sealed class AudioDocumentTests
             using var reader = new WaveFileReader(path);
             reader.WaveFormat.BitsPerSample.Should().Be(32);
             reader.WaveFormat.Encoding.Should().Be(WaveFormatEncoding.IeeeFloat);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void SaveRangeAsWaveWritesOnlySelectedFrames()
+    {
+        var document = CreateDocument();
+        var expected = document.Samples.AsSpan(100 * 2, 200 * 2).ToArray();
+        var path = Path.Combine(Path.GetTempPath(), $"wavebenchrange_{Guid.NewGuid():N}.wav");
+        try
+        {
+            document.SaveRangeAsWave(path, 100, 200, 32);
+
+            using var reader = new AudioFileReader(path);
+            reader.WaveFormat.SampleRate.Should().Be(44100);
+            reader.WaveFormat.Channels.Should().Be(2);
+            var actual = new float[expected.Length];
+            var read = reader.Read(actual.AsSpan());
+            read.Should().Be(expected.Length);
+            actual.Should().Equal(expected);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void SaveRangeAsWaveRejectsRangeBeyondDocument()
+    {
+        var document = CreateDocument();
+        var action = () => document.SaveRangeAsWave("x.wav", 2300, 200, 16);
+        action.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void SaveRangeAsMp3WritesNonEmptyFileForSelection()
+    {
+        var document = CreateDocument();
+        var path = Path.Combine(Path.GetTempPath(), $"wavebenchrangemp3_{Guid.NewGuid():N}.mp3");
+        try
+        {
+            document.SaveRangeAsMp3(path, 100, 200, 128);
+            File.ReadAllBytes(path).Length.Should().BeGreaterThan(100);
         }
         finally { File.Delete(path); }
     }

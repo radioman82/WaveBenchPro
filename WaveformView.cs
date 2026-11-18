@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 
@@ -186,11 +186,23 @@ public sealed class WaveformView : FrameworkElement
 
     protected override void OnMouseRightButtonDown(MouseButtonEventArgs e)
     {
+        // Rechtsklick innerhalb der bestehenden Auswahl: Auswahl behalten, damit
+        // das Kontextmenü „Neu aus Auswahl“ exakt diesen Bereich verwenden kann.
+        var x = e.GetPosition(this).X;
+        var selection = GetSelection();
+        var plot = GetPlotBounds();
+        if (selection.HasValue &&
+            x >= XAt(selection.Value.StartSample, plot) &&
+            x <= XAt(selection.Value.EndSample, plot))
+        {
+            return;
+        }
+
+        // Außerhalb der Auswahl setzt Rechtsklick nur den Cursor.
         selectionStart = null;
-        selectionEnd = FrameAt(e.GetPosition(this).X);
+        selectionEnd = FrameAt(x);
         InvalidateVisual();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
-        e.Handled = true;
     }
 
     protected override void OnMouseWheel(MouseWheelEventArgs e)
@@ -253,9 +265,9 @@ public sealed class WaveformView : FrameworkElement
         if (!selection.HasValue) return;
         var start = XAt(selection.Value.StartSample, bounds);
         var end = XAt(selection.Value.EndSample, bounds);
-        var color = dragStart.HasValue ? Color.FromArgb(170, 28, 151, 222) : Color.FromArgb(120, 35, 110, 165);
+        var color = dragStart.HasValue ? Color.FromArgb(170, 255, 214, 64) : Color.FromArgb(120, 245, 205, 72);
         context.DrawRectangle(new SolidColorBrush(color), null, new Rect(Math.Max(bounds.Left, start), bounds.Top, Math.Min(bounds.Right, end) - Math.Max(bounds.Left, start), bounds.Height));
-        var handle = new Pen(new SolidColorBrush(Color.FromRgb(116, 224, 255)), 2);
+        var handle = new Pen(new SolidColorBrush(Color.FromRgb(255, 224, 64)), 2);
         context.DrawLine(handle, new Point(start, bounds.Top), new Point(start, bounds.Bottom));
         context.DrawLine(handle, new Point(end, bounds.Top), new Point(end, bounds.Bottom));
     }
