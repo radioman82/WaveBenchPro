@@ -691,15 +691,23 @@ public partial class MainWindow : Window
     {
         if (isScanningVst) return;
         isScanningVst = true;
-        HintText.Content = "VST3-Plugins werden gescannt …";
+        HintText.Content = "VST3-Scan-Dialog wird geöffnet …";
         try
         {
-            var effects = await Task.Run(() => Vst3EffectCatalog.Scan());
-            vstEffects = effects;
-            ReplaceItemsSource(VstEffectsList, effects);
-            HintText.Content = effects.Count == 0
-                ? "Keine VST3-Effekte gefunden."
-                : $"{effects.Count} VST3-Effekte gefunden. Doppelklick wendet sie an.";
+            var dialog = new VstScanDialog(this);
+            if (dialog.ShowDialog() != true) { isScanningVst = false; return; }
+            if (dialog.Result is { } effects && effects.Count > 0)
+            {
+                vstEffects = effects;
+                ReplaceItemsSource(VstEffectsList, effects);
+                HintText.Content = effects.Count == 0
+                    ? "Keine VST3-Effekte gefunden."
+                    : $"{effects.Count} VST3-Effekte gefunden. Doppelklick wendet sie an.";
+            }
+            else
+            {
+                HintText.Content = "Keine VST3-Effekte gefunden.";
+            }
         }
         catch (Exception exception)
         {
@@ -726,11 +734,15 @@ public partial class MainWindow : Window
         var start = selection?.StartSample ?? 0;
         var frames = selection?.Length ?? document.FrameCount;
         if (frames <= 0) return;
-        StopPlayback();
-        HintText.Content = $"VST3-Effekt '{descriptor.Name}' wird gerendert …";
+
+        var dialog = new VstPluginDialog(this, descriptor);
+        dialog.PreviewRequested += state => PreviewVstEffect(descriptor, state);
         try
         {
-            var rendered = Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames);
+            if (dialog.ShowDialog() != true) return;
+            StopPlayback();
+            var state = dialog.ResultState;
+            var rendered = Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames, state);
             document.ReplaceFrames(start, rendered, frames);
             RefreshAfterEdit(start);
             HintText.Content = $"VST3-Effekt '{descriptor.Name}' angewendet.";
@@ -739,6 +751,33 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(this, $"Der VST3-Effekt konnte nicht angewendet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
             HintText.Content = "VST3-Effekt fehlgeschlagen.";
+        }
+        finally { StopPreview(); }
+    }
+
+    private async void PreviewVstEffect(Vst3EffectDescriptor descriptor, byte[]? state)
+    {
+        if (document is null) return;
+        StopPreview();
+        try
+        {
+            var selection = Waveform.GetSelection();
+            var start = selection?.StartSample ?? 0;
+            var frames = selection?.Length ?? document.FrameCount;
+            if (frames <= 0) return;
+            var rendered = await Task.Run(() => Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames, state));
+            await Dispatcher.InvokeAsync(() =>
+            {
+                previewPlayer = CreatePlayer();
+                previewPlayer.Init(new ArrayWaveProvider(rendered, 0, rendered.Length, WaveFormat.CreateIeeeFloatWaveFormat(document.SampleRate, document.Channels)));
+                previewPlayer.Play();
+                HintText.Content = $"Vorschau: {descriptor.DisplayName}";
+            });
+        }
+        catch (Exception exception)
+        {
+            StopPreview();
+            MessageBox.Show(this, $"Die VST3-Vorschau konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 

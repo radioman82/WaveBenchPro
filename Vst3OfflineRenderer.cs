@@ -16,7 +16,7 @@ public static class Vst3OfflineRenderer
     /// Der Host rechnet intern stereo; Mono-Spuren werden auf links Stereo hoch- und danach
     /// wieder auf Mono zurückgerechnet. Die Länge bleibt unverändert.
     /// </summary>
-    public static float[] Render(Vst3EffectDescriptor descriptor, ISampleProvider source, int sourceChannels, int frames)
+    public static float[] Render(Vst3EffectDescriptor descriptor, ISampleProvider source, int sourceChannels, int frames, byte[]? state = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(source);
@@ -51,6 +51,8 @@ public static class Vst3OfflineRenderer
 
         using var module = Vst3Module.Load(descriptor.Path);
         using var plugin = module.CreatePlugin(descriptor.ClassInfo, source.WaveFormat.SampleRate, BlockSize);
+        if (state != null && state.Length > 0)
+            plugin.LoadState(state);
         var effect = new Vst3EffectSampleProvider(
             new ArraySampleProvider(stereo, WaveFormat.CreateIeeeFloatWaveFormat(source.WaveFormat.SampleRate, 2)),
             plugin)
