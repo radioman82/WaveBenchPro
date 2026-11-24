@@ -39,6 +39,12 @@
       <Setter Property="FontFamily" Value="Segoe UI Symbol"/>
       <Setter Property="FontSize" Value="15"/>
     </Style>
+    <Style x:Key="LoopToolButton" TargetType="ToggleButton">
+      <Setter Property="Width" Value="29"/><Setter Property="Height" Value="27"/><Setter Property="Padding" Value="1"/><Setter Property="Margin" Value="2"/>
+      <Setter Property="Background" Value="{StaticResource Raised}"/><Setter Property="Foreground" Value="{StaticResource Text}"/><Setter Property="BorderBrush" Value="{StaticResource Line}"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="FontFamily" Value="Segoe UI Symbol"/><Setter Property="FontSize" Value="15"/><Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ToggleButton"><Border x:Name="Bd" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Bd" Property="Background" Value="{StaticResource Hover}"/><Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger><Trigger Property="IsChecked" Value="True"><Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentDark}"/><Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Accent}"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+    </Style>
 
     <Style TargetType="Menu">
           <Setter Property="Background" Value="{StaticResource Panel}"/>
@@ -315,46 +321,63 @@
 
   <DockPanel LastChildFill="True">
     <Border DockPanel.Dock="Top" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"><Menu>
-      <MenuItem Header="_Datei"><MenuItem Header="Neu aus Auswahl" InputGestureText="Strg+Umschalt+N" Click="NewFromSelection_Click"/><MenuItem Header="Öffnen..." InputGestureText="Strg+O" Click="Open_Click"/><Separator/><MenuItem Header="Speichern" InputGestureText="Strg+S" Click="Save_Click"/><MenuItem Header="Speichern unter..." InputGestureText="Strg+Umschalt+S" Click="SaveAs_Click"/><MenuItem Header="Exportieren..." InputGestureText="Strg+E" Click="Export_Click"/><Separator/><MenuItem Header="Schließen" InputGestureText="Strg+W" Click="CloseDocument_Click"/><MenuItem Header="Beenden" Click="Exit_Click"/></MenuItem>
-      <MenuItem Header="_Bearbeiten"><MenuItem Header="Rückgängig" InputGestureText="Strg+Z" Click="Undo_Click"/><MenuItem Header="Wiederholen" InputGestureText="Strg+Y" Click="Redo_Click"/><Separator/><MenuItem Header="Ausschneiden" InputGestureText="Strg+X" Click="Cut_Click"/><MenuItem Header="Kopieren" InputGestureText="Strg+C" Click="Copy_Click"/><MenuItem Header="Einfügen" InputGestureText="Strg+V" Click="Paste_Click"/><MenuItem Header="Löschen" InputGestureText="Entf" Click="Delete_Click"/><Separator/><MenuItem Header="Alles auswählen" InputGestureText="Strg+A" Click="SelectAll_Click"/></MenuItem>
-      <MenuItem Header="_Ansicht"><MenuItem Header="Horizontal vergrößern" InputGestureText="+" Click="ZoomIn_Click"/><MenuItem Header="Horizontal verkleinern" InputGestureText="-" Click="ZoomOut_Click"/><MenuItem Header="Vertikal vergrößern" Click="ZoomVerticalIn_Click"/><MenuItem Header="Vertikal verkleinern" Click="ZoomVerticalOut_Click"/><MenuItem Header="Gesamte Datei" InputGestureText="Strg+0" Click="ShowAll_Click"/><Separator/><MenuItem x:Name="MeterMenuItem" Header="Stereo-Pegelanzeige" InputGestureText="Strg+M" IsCheckable="True" IsChecked="True" Click="MeterToggle_Click"/></MenuItem>
+      <MenuItem Header="_Datei"><MenuItem Header="Neu aus Auswahl" Click="NewFromSelection_Click"/><MenuItem Header="Öffnen..." Click="Open_Click"/><Separator/><MenuItem Header="Speichern" Click="Save_Click"/><MenuItem Header="Speichern unter..." Click="SaveAs_Click"/><MenuItem Header="Exportieren..." Click="Export_Click"/><Separator/><MenuItem Header="Schließen" Click="CloseDocument_Click"/><MenuItem Header="Beenden" Click="Exit_Click"/></MenuItem>
+      <MenuItem Header="_Bearbeiten"><MenuItem Header="Rückgängig" Click="Undo_Click"/><MenuItem Header="Wiederholen" Click="Redo_Click"/><Separator/><MenuItem Header="Ausschneiden" Click="Cut_Click"/><MenuItem Header="Kopieren" Click="Copy_Click"/><MenuItem Header="Einfügen" Click="Paste_Click"/><MenuItem Header="Löschen" Click="Delete_Click"/><Separator/><MenuItem Header="Auswahl präzise setzen..." Click="PreciseSelection_Click"/><MenuItem Header="Alles auswählen" Click="SelectAll_Click"/></MenuItem>
+      <MenuItem Header="_Ansicht"><MenuItem Header="Horizontal vergrößern" Click="ZoomIn_Click"/><MenuItem Header="Horizontal verkleinern" Click="ZoomOut_Click"/><MenuItem Header="Vertikal vergrößern" Click="ZoomVerticalIn_Click"/><MenuItem Header="Vertikal verkleinern" Click="ZoomVerticalOut_Click"/><MenuItem Header="Gesamte Datei" Click="ShowAll_Click"/><Separator/><MenuItem x:Name="SpectrogramMenuItem" Header="Spektrogramm" IsCheckable="True" Click="SpectrogramToggle_Click"/><MenuItem x:Name="MeterMenuItem" Header="Stereo-Pegelanzeige" IsCheckable="True" IsChecked="True" Click="MeterToggle_Click"/></MenuItem>
       <MenuItem Header="_Effekte"><MenuItem Header="Amplitude"><MenuItem Header="Verstärken..." Click="Gain_Click"/><MenuItem Header="Normalisieren..." Click="Normalize_Click"/><MenuItem Header="Einblenden" Click="FadeIn_Click"/><MenuItem Header="Ausblenden" Click="FadeOut_Click"/></MenuItem><MenuItem Header="Filter"><MenuItem Header="Hochpass..." Click="HighPass_Click"/><MenuItem Header="Tiefpass..." Click="LowPass_Click"/><MenuItem Header="Equalizer..." Click="Equalizer_Click"/></MenuItem><MenuItem Header="Dynamik"><MenuItem Header="Kompressor..." Click="Compressor_Click"/><MenuItem Header="Limiter..." Click="Limiter_Click"/></MenuItem><MenuItem Header="Rauschminderung" IsEnabled="False"/><Separator/><MenuItem Header="VST3-Effekte neu scannen" Click="ScanVst_Click"/></MenuItem>
-      <MenuItem Header="_Aufnahme"><MenuItem Header="Aufnahme starten/stoppen" InputGestureText="Strg+R" Click="Record_Click"/></MenuItem>
-      <MenuItem Header="_Erzeugen" IsEnabled="False"/><MenuItem Header="_Analyse" IsEnabled="False"/><MenuItem Header="_Favoriten" IsEnabled="False"/>
+      <MenuItem Header="_Aufnahme"><MenuItem Header="Aufnahme starten/stoppen" Click="Record_Click"/></MenuItem>
+      <MenuItem Header="_Analyse"><MenuItem Header="Spektrogramm anzeigen" IsCheckable="True" IsChecked="{Binding IsChecked, ElementName=SpectrogramMenuItem, Mode=TwoWay}" Click="SpectrogramToggle_Click"/><MenuItem Header="Pegelanzeige anzeigen" IsCheckable="True" IsChecked="{Binding IsChecked, ElementName=MeterMenuItem, Mode=TwoWay}" Click="MeterToggle_Click"/></MenuItem>
       <MenuItem Header="_Optionen"><MenuItem Header="Audio-Hardware..." Click="AudioHardware_Click"/></MenuItem>
       <MenuItem Header="_Fenster" IsEnabled="False"/><MenuItem Header="_Hilfe"><MenuItem Header="Info zu WaveBench Pro" Click="About_Click"/></MenuItem>
     </Menu></Border>
 
     <Border DockPanel.Dock="Top" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="4,3">
       <StackPanel Orientation="Horizontal">
-        <Button Style="{StaticResource ToolButton}" Content="▱" ToolTip="Öffnen" Click="Open_Click"/><Button Style="{StaticResource ToolButton}" Content="▣" ToolTip="Speichern unter" Click="SaveAs_Click"/><Button Style="{StaticResource ToolButton}" Content="⇩" ToolTip="Exportieren (Strg+E)" Click="Export_Click"/><Rectangle Width="1" Height="22" Fill="{StaticResource Line}" Margin="5,1"/><Button Style="{StaticResource ToolButton}" Content="↶" ToolTip="Rückgängig (Strg+Z)" Click="Undo_Click"/><Button Style="{StaticResource ToolButton}" Content="↷" ToolTip="Wiederholen (Strg+Y)" Click="Redo_Click"/><Button Style="{StaticResource ToolButton}" Content="✂" ToolTip="Ausschneiden" Click="Cut_Click"/><Button Style="{StaticResource ToolButton}" Content="⧉" ToolTip="Kopieren" Click="Copy_Click"/><Button Style="{StaticResource ToolButton}" Content="▣" ToolTip="Einfügen" Click="Paste_Click"/><Button Style="{StaticResource ToolButton}" Content="⌫" ToolTip="Auswahl löschen" Click="Delete_Click"/><Rectangle Width="1" Height="22" Fill="{StaticResource Line}" Margin="5,1"/><Button Style="{StaticResource ToolButton}" Content="▶" ToolTip="Wiedergabe" Click="Play_Click"/><Button Style="{StaticResource ToolButton}" Content="■" ToolTip="Stopp" Click="Stop_Click"/><Button x:Name="RecordButton" Style="{StaticResource ToolButton}" Content="●" ToolTip="Aufnahme starten/stoppen (Strg+R)" Click="Record_Click"/><Rectangle Width="1" Height="22" Fill="{StaticResource Line}" Margin="5,1"/><Button Style="{StaticResource ToolButton}" Content="H−" ToolTip="Horizontal verkleinern" Click="ZoomOut_Click"/><Button Style="{StaticResource ToolButton}" Content="H+" ToolTip="Horizontal vergrößern" Click="ZoomIn_Click"/><Button Style="{StaticResource ToolButton}" Content="V−" ToolTip="Vertikal verkleinern" Click="ZoomVerticalOut_Click"/><Button Style="{StaticResource ToolButton}" Content="V+" ToolTip="Vertikal vergrößern" Click="ZoomVerticalIn_Click"/>
+        <Button Style="{StaticResource ToolButton}" Content="▱" ToolTip="Öffnen" Click="Open_Click"/><Button Style="{StaticResource ToolButton}" Content="▣" ToolTip="Speichern unter" Click="SaveAs_Click"/><Button Style="{StaticResource ToolButton}" Content="⇩" ToolTip="Exportieren (Strg+E)" Click="Export_Click"/><Rectangle Width="1" Height="22" Fill="{StaticResource Line}" Margin="5,1"/><Button Style="{StaticResource ToolButton}" Content="↶" ToolTip="Rückgängig (Strg+Z)" Click="Undo_Click"/><Button Style="{StaticResource ToolButton}" Content="↷" ToolTip="Wiederholen (Strg+Y)" Click="Redo_Click"/><Button Style="{StaticResource ToolButton}" Content="✂" ToolTip="Ausschneiden" Click="Cut_Click"/><Button Style="{StaticResource ToolButton}" Content="⧉" ToolTip="Kopieren" Click="Copy_Click"/><Button Style="{StaticResource ToolButton}" Content="▣" ToolTip="Einfügen" Click="Paste_Click"/><Button Style="{StaticResource ToolButton}" Content="⌫" ToolTip="Auswahl löschen" Click="Delete_Click"/><Rectangle Width="1" Height="22" Fill="{StaticResource Line}" Margin="5,1"/><Button Style="{StaticResource ToolButton}" Content="▶" ToolTip="Wiedergabe" Click="Play_Click"/><Button Style="{StaticResource ToolButton}" Content="■" ToolTip="Stopp" Click="Stop_Click"/><ToggleButton x:Name="LoopButton" Style="{StaticResource LoopToolButton}" Content="⟳" ToolTip="Endlosschleife ein/aus" Click="LoopToggle_Click"/><Button x:Name="RecordButton" Style="{StaticResource ToolButton}" Content="●" ToolTip="Aufnahme starten/stoppen (Strg+R)" Click="Record_Click"/>
       </StackPanel>
     </Border>
 
     <Border DockPanel.Dock="Top" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="6,4">
-      <StackPanel Orientation="Horizontal"><Button Style="{StaticResource ViewTabActiveButton}" Content="Edit View"/><Button Style="{StaticResource TabSelectButton}" Content="Multitrack View" IsEnabled="False"/></StackPanel>
+      <StackPanel Orientation="Horizontal"><Button x:Name="EditViewButton" Style="{StaticResource ViewTabActiveButton}" Content="Edit View" Click="EditView_Click"/><Button x:Name="MultitrackViewButton" Style="{StaticResource TabSelectButton}" Content="Multitrack View" Click="MultitrackView_Click"/></StackPanel>
     </Border>
 
     <StatusBar DockPanel.Dock="Bottom" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1,1,0,0" FontFamily="Segoe UI">
-      <StatusBarItem x:Name="HintText" Width="300">Bereit</StatusBarItem><Separator/><StatusBarItem x:Name="StartText" Width="145">Start: 0:00.000</StatusBarItem><StatusBarItem x:Name="EndText" Width="145">Ende: 0:00.000</StatusBarItem><StatusBarItem x:Name="SelectionText" Width="145">Auswahl: 0:00.000</StatusBarItem><Separator/><StatusBarItem x:Name="SampleText" Width="230">Samples: 0 – 0 (0)</StatusBarItem>
+      <StatusBarItem x:Name="HintText" Width="300">Bereit</StatusBarItem><Separator/><StatusBarItem x:Name="StartText" Width="145" ToolTip="Anfang des markierten Bereichs">Start: —</StatusBarItem><StatusBarItem x:Name="EndText" Width="145" ToolTip="Ende des markierten Bereichs">Ende: —</StatusBarItem><StatusBarItem x:Name="SelectionText" Width="145" ToolTip="Länge des markierten Bereichs: Ende minus Start">Dauer: —</StatusBarItem><Separator/><StatusBarItem x:Name="SampleText" Width="230">Keine Auswahl</StatusBarItem>
     </StatusBar>
     <Border x:Name="MeterPanel" DockPanel.Dock="Bottom" Background="{StaticResource WaveSurface}" Padding="6,4,6,2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0"><local:StereoLevelMeter x:Name="StereoMeter" Height="82"/></Border>
 
     <Grid Margin="6">
+      <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <Grid.ColumnDefinitions><ColumnDefinition Width="218"/><ColumnDefinition Width="5"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-      <Border Grid.Column="0" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource Panel}">
+      <Border Grid.Column="0" Grid.RowSpan="2" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource Panel}">
         <DockPanel>
           <Border DockPanel.Dock="Top" Height="25" Background="{StaticResource AccentDark}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1"><TextBlock Style="{StaticResource PanelCaption}" Text="Organizer"/></Border>
           <TabControl Margin="4" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}">
-            <TabItem Header="Dateien"><DockPanel Margin="3"><StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5"><Button Style="{StaticResource ClassicButton}" Content="Öffnen" Click="Open_Click"/></StackPanel><ListBox x:Name="FileList" SelectionChanged="FileList_SelectionChanged"><ListBoxItem Foreground="{StaticResource Muted}">Keine Datei geöffnet</ListBoxItem></ListBox></DockPanel></TabItem>
+            <TabItem Header="Dateien"><DockPanel Margin="3"><StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5"><Button Style="{StaticResource ClassicButton}" Content="Öffnen" Click="Open_Click"/><Button Style="{StaticResource ClassicButton}" Content="−" Margin="4,0,0,0" MinWidth="28" Click="FileListRemove_Click" ToolTip="Dokument schließen"/></StackPanel><ListBox x:Name="FileList" SelectionChanged="FileList_SelectionChanged" PreviewMouseLeftButtonDown="FileList_PreviewMouseLeftButtonDown" PreviewMouseMove="FileList_PreviewMouseMove"><ListBoxItem Foreground="{StaticResource Muted}">Keine Datei geöffnet</ListBoxItem></ListBox></DockPanel></TabItem>
             <TabItem Header="Effekte"><DockPanel Margin="3"><StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,5"><Button Style="{StaticResource ClassicButton}" Content="VST3 scannen" Click="ScanVst_Click"/></StackPanel><ListBox x:Name="VstEffectsList" DisplayMemberPath="DisplayName" MouseDoubleClick="VstEffectsList_MouseDoubleClick"><ListBoxItem Foreground="{StaticResource Muted}">Noch nicht gescannt</ListBoxItem></ListBox></DockPanel></TabItem>
             <TabItem Header="Favoriten"><TextBlock Margin="8" TextWrapping="Wrap" Foreground="{StaticResource Muted}">Eigene Schnellbefehle erscheinen hier.</TextBlock></TabItem>
           </TabControl>
           <Border DockPanel.Dock="Bottom" Background="{StaticResource Surface}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="8"><StackPanel><TextBlock x:Name="FormatText" Text="Audioformat: —" Foreground="{StaticResource Muted}"/><TextBlock x:Name="DurationText" Margin="0,3,0,0" Text="Länge: —" Foreground="{StaticResource Muted}"/></StackPanel></Border>
         </DockPanel>
       </Border>
-      <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="{StaticResource Line}"/>
-      <Border Grid.Column="2" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource WaveSurface}" ClipToBounds="True">
+      <GridSplitter Grid.Column="1" Grid.RowSpan="2" Width="5" HorizontalAlignment="Stretch" Background="{StaticResource Line}"/>
+      <Border Grid.Column="2" Grid.Row="1" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1,0,1,1" Padding="4,1">
+        <Grid>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+            <TextBlock Text="Horizontal" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="5,0,8,0"/>
+            <Button Style="{StaticResource ToolButton}" Content="−" ToolTip="Horizontal verkleinern" Click="ZoomOut_Click"/>
+            <Button Style="{StaticResource ToolButton}" Content="+" ToolTip="Horizontal vergrößern" Click="ZoomIn_Click"/>
+            <Button Style="{StaticResource ToolButton}" Content="R" ToolTip="Horizontaler Standard-Zoom (Einzeldatei: gesamte Länge)" Click="ResetHorizontalZoom_Click"/>
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+            <TextBlock Text="Vertikal" Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="5,0,8,0"/>
+            <Button Style="{StaticResource ToolButton}" Content="−" ToolTip="Vertikal verkleinern" Click="ZoomVerticalOut_Click"/>
+            <Button Style="{StaticResource ToolButton}" Content="+" ToolTip="Vertikal vergrößern" Click="ZoomVerticalIn_Click"/>
+            <Button Style="{StaticResource ToolButton}" Content="R" ToolTip="Vertikalen Zoom auf Standard zurücksetzen" Click="ResetVerticalZoom_Click"/>
+          </StackPanel>
+        </Grid>
+      </Border>
+      <Border x:Name="EditorPanel" Grid.Column="2" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource WaveSurface}" ClipToBounds="True">
         <DockPanel LastChildFill="True">
           <Border DockPanel.Dock="Top" Height="27" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1">
             <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -375,6 +398,28 @@
             </Grid>
           </Border>
           <local:WaveformView x:Name="Waveform" ContextMenu="{StaticResource WaveformContextMenu}" SelectionChanged="Waveform_SelectionChanged"/>
+        </DockPanel>
+      </Border>
+      <Border x:Name="MultitrackPanel" Grid.Column="2" Visibility="Collapsed" BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource WaveSurface}" ClipToBounds="True">
+        <DockPanel>
+          <Border DockPanel.Dock="Top" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,0,0,1" Padding="8,5">
+            <WrapPanel><TextBlock Foreground="{StaticResource Muted}" VerticalAlignment="Center" Text="TEMPO" Margin="4,0,4,0"/><TextBox x:Name="BpmText" Width="55" Margin="5,0" Text="120" LostFocus="Bpm_LostFocus"/><TextBlock Foreground="{StaticResource Muted}" VerticalAlignment="Center" Text="BPM · 4/4" Margin="4,0,18,0"/><Button Style="{StaticResource ClassicButton}" Content="Mixdown" Margin="6,0,0,0" Click="Mixdown_Click"/><TextBlock x:Name="MultitrackInfo" Margin="18,0,0,0" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/></WrapPanel>
+          </Border>
+          <ScrollViewer DockPanel.Dock="Top" Visibility="Collapsed" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"><ItemsControl x:Name="MultitrackTracks" Margin="8">
+            <ItemsControl.ItemTemplate><DataTemplate>
+              <Border BorderBrush="{StaticResource Line}" BorderThickness="1" Background="{StaticResource Panel}" Margin="0,0,0,6" Padding="6" MouseLeftButtonUp="Track_Selected">
+                <Grid MinWidth="980"><Grid.ColumnDefinitions><ColumnDefinition Width="240"/><ColumnDefinition Width="55"/><ColumnDefinition Width="55"/><ColumnDefinition Width="105"/><ColumnDefinition Width="105"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                  <StackPanel Grid.Column="0"><TextBox BorderThickness="0" Background="Transparent" Foreground="{StaticResource Text}" Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}"/><TextBlock Foreground="{StaticResource Muted}" FontSize="11" Text="{Binding StartText, StringFormat=Start: {0}}"/></StackPanel>
+                  <ToggleButton Grid.Column="1" Content="Stumm" IsChecked="{Binding Muted}" Click="TrackMute_Click" ToolTip="Diese Spur nicht wiedergeben"/>
+                  <ToggleButton Grid.Column="2" Content="Solo" IsChecked="{Binding Solo}" Click="TrackSolo_Click" ToolTip="Nur diese Spur wiedergeben"/>
+                  <StackPanel Grid.Column="3"><TextBlock FontSize="10" Foreground="{StaticResource Muted}" Text="LAUT"/><Slider Minimum="0" Maximum="2" Value="{Binding Gain}" TickFrequency="0.25" IsSnapToTickEnabled="False" ValueChanged="TrackGain_Changed" ToolTip="Lautstärke"/></StackPanel>
+                  <StackPanel Grid.Column="4"><TextBlock FontSize="10" Foreground="{StaticResource Muted}" Text="PAN L/R"/><Slider Minimum="-1" Maximum="1" Value="{Binding Pan}" TickFrequency="0.25" IsSnapToTickEnabled="False" ValueChanged="TrackPan_Changed" ToolTip="Panorama"/></StackPanel>
+                  <Canvas Grid.Column="5" MinWidth="430" Height="52" Margin="10,0,0,0" Background="#FF111D21" ClipToBounds="True" AllowDrop="True" DragOver="TrackLane_DragOver" Drop="TrackLane_Drop"><Border Canvas.Left="{Binding ClipLeft}" Width="{Binding ClipWidth}" Height="38" Margin="0,7" Background="{StaticResource AccentDark}" BorderBrush="{StaticResource Accent}" BorderThickness="1"><TextBlock Foreground="{StaticResource Text}" VerticalAlignment="Center" Margin="8,0" Text="{Binding ClipLabel}" TextTrimming="CharacterEllipsis"/></Border></Canvas>
+                </Grid>
+              </Border>
+            </DataTemplate></ItemsControl.ItemTemplate>
+          </ItemsControl></ScrollViewer>
+          <local:SequencerView x:Name="Sequencer"/>
         </DockPanel>
       </Border>
     </Grid>

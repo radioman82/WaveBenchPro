@@ -7,6 +7,8 @@ using System.Windows.Media;
 
 namespace WellenEditor;
 
+internal enum ExportFormat { Wav, Mp3, Flac, Ogg, Opus }
+
 /// <summary>Kompakter Export-Dialog. Erzeugt eine Kopie und lässt das Dokument unangetastet.</summary>
 internal sealed class ExportDialog : Window
 {
@@ -37,6 +39,9 @@ internal sealed class ExportDialog : Window
 
         formatBox.Items.Add("WAV");
         formatBox.Items.Add("MP3");
+        formatBox.Items.Add("FLAC");
+        formatBox.Items.Add("OGG Vorbis");
+        formatBox.Items.Add("Opus");
         formatBox.SelectedIndex = 0;
 
         rangeBox.Items.Add("Gesamte Datei");
@@ -100,13 +105,22 @@ internal sealed class ExportDialog : Window
         };
     }
 
-    public bool IsMp3 => formatBox.SelectedIndex == 1;
+    public ExportFormat Format => (ExportFormat)formatBox.SelectedIndex;
+    public bool IsMp3 => Format == ExportFormat.Mp3;
     public bool ExportSelection => rangeBox.SelectedIndex == 1 && selection.HasValue;
     public string TargetPath => pathBox.Text.Trim();
     public int BitsPerSample => qualityBox.SelectedIndex switch { 0 => 16, 1 => 24, _ => 32 };
     public int BitRate => qualityBox.SelectedIndex == 1 ? 320 : 192;
+    public double VbrQuality => qualityBox.SelectedIndex switch { 0 => .4, 2 => .8, 3 => 1.0, _ => .6 };
 
-    private string Extension => IsMp3 ? ".mp3" : ".wav";
+    private string Extension => Format switch
+    {
+        ExportFormat.Mp3 => ".mp3",
+        ExportFormat.Flac => ".flac",
+        ExportFormat.Ogg => ".ogg",
+        ExportFormat.Opus => ".opus",
+        _ => ".wav"
+    };
 
     private string DefaultStem
     {
@@ -151,20 +165,31 @@ internal sealed class ExportDialog : Window
             qualityBox.Items.Add("192 kBit/s");
             qualityBox.Items.Add("320 kBit/s");
         }
-        else
+        else if (Format == ExportFormat.Wav)
         {
             qualityBox.Items.Add("16 Bit PCM");
             qualityBox.Items.Add("24 Bit PCM");
             qualityBox.Items.Add("32 Bit Float");
         }
-        qualityBox.SelectedIndex = 0;
+        else if (Format == ExportFormat.Flac)
+        {
+            qualityBox.Items.Add("Verlustfrei · Standard-Kompression");
+        }
+        else
+        {
+            qualityBox.Items.Add("40 % · kleinere Datei");
+            qualityBox.Items.Add("60 % · Standard");
+            qualityBox.Items.Add("80 % · hohe Qualität");
+            qualityBox.Items.Add("100 % · höchste Qualität");
+        }
+        qualityBox.SelectedIndex = (Format is ExportFormat.Ogg or ExportFormat.Opus) ? 1 : 0;
     }
 
     private void Browse_Click(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog
         {
-            Filter = IsMp3 ? "MP3|*.mp3" : "WAV|*.wav",
+            Filter = $"{formatBox.SelectedItem}|*{Extension}",
             FileName = Path.GetFileName(pathBox.Text)
         };
         if (dialog.ShowDialog(this) != true) return;

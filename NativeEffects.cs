@@ -210,7 +210,7 @@ public static class NativeEffects
         public double Y2;
     }
 
-    private readonly record struct Biquad(double B0, double B1, double B2, double A0, double A1, double A2)
+    internal readonly record struct Biquad(double B0, double B1, double B2, double A0, double A1, double A2)
     {
         public static Biquad LowPass(double frequency, double q, int sampleRate) => Standard(frequency, q, sampleRate, lowPass: true);
 

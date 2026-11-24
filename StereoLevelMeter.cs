@@ -12,9 +12,7 @@ namespace WellenEditor;
 /// </summary>
 public sealed class StereoLevelMeter : Control
 {
-    // -36 dB statt -60 dB: laute Passagen liegen nicht alle am rechten Rand,
-// ein kurzer Peak (z. B. Bassdrum) wird dadurch sichtbar.
-private const double MinimumDb = -36d;
+    private const double MinimumDb = -36d;
 
     private readonly DispatcherTimer decayTimer = new() { Interval = TimeSpan.FromMilliseconds(25) };
     private readonly Brush trackBrush = new SolidColorBrush(Color.FromRgb(0x0B, 0x10, 0x16));
@@ -30,6 +28,9 @@ private const double MinimumDb = -36d;
     private double right;
     private double leftPeak;
     private double rightPeak;
+    private double leftRms;
+    private double rightRms;
+    private bool clipped;
     private DateTime leftPeakTime = DateTime.MinValue;
     private DateTime rightPeakTime = DateTime.MinValue;
 
@@ -54,13 +55,14 @@ private const double MinimumDb = -36d;
     public StereoLevelMeter()
     {
         SnapsToDevicePixels = true;
+        ToolTip = "dBFS: farbiger Balken = Peak, heller Streifen unten = RMS. Zahl und senkrechter Strich halten den Peak kurz fest. Rot ab −1 dBFS. CLIP = 0 dBFS erreicht; Klick löscht die CLIP-Merkung.";
         Loaded += (_, _) => decayTimer.Start();
         Unloaded += (_, _) => decayTimer.Stop();
         decayTimer.Tick += DecayTimer_Tick;
     }
 
     /// <summary>Übernimmt Spitzenpegel (0..1) pro Kanal; Mono wird auf beide Seiten gespiegelt.</summary>
-    public void SetLevels(IReadOnlyList<float> peaks)
+    public void SetLevels(IReadOnlyList<float> peaks, IReadOnlyList<float>? rms = null, bool isClipped = false)
     {
         if (peaks.Count == 0) { SetTargets(0, 0); return; }
 
@@ -91,14 +93,28 @@ private const double MinimumDb = -36d;
             rightPeakValue = rightSum / Math.Max(1, rightCount);
         }
 
+        var rmsValues = rms ?? peaks;
+        (var leftRmsValue, var rightRmsValue) = ToStereo(rmsValues);
+        leftRms = ToPosition(leftRmsValue);
+        rightRms = ToPosition(rightRmsValue);
+        clipped |= isClipped;
         SetTargets(ToPosition(leftPeakValue), ToPosition(rightPeakValue));
     }
 
     public void Reset()
     {
-        left = right = leftPeak = rightPeak = 0;
+        left = right = leftPeak = rightPeak = leftRms = rightRms = 0;
+        clipped = false;
         leftPeakTime = rightPeakTime = DateTime.UtcNow;
         Publish();
+    }
+
+    protected override void OnMouseLeftButtonDown(System.Windows.Input.MouseButtonEventArgs e)
+    {
+        base.OnMouseLeftButtonDown(e);
+        clipped = false;
+        InvalidateVisual();
+        e.Handled = true;
     }
 
     private static double ToPosition(double peak)
@@ -106,6 +122,20 @@ private const double MinimumDb = -36d;
         if (!double.IsFinite(peak) || peak <= 0) return 0;
         var db = 20d * Math.Log10(peak);
         return Math.Clamp((db - MinimumDb) / -MinimumDb, 0, 1);
+    }
+
+    private static (double left, double right) ToStereo(IReadOnlyList<float> values)
+    {
+        if (values.Count == 0) return (0, 0);
+        if (values.Count == 1) return (values[0], values[0]);
+        if (values.Count == 2) return (values[0], values[1]);
+        var left = 0d; var right = 0d; var leftCount = 0; var rightCount = 0;
+        for (var index = 0; index < values.Count; index += 2)
+        {
+            left += values[index]; leftCount++;
+            if (index + 1 < values.Count) { right += values[index + 1]; rightCount++; }
+        }
+        return (left / Math.Max(1, leftCount), right / Math.Max(1, rightCount));
     }
 
     private void SetTargets(double targetLeft, double targetRight)
@@ -155,14 +185,29 @@ private const double MinimumDb = -36d;
 
         const double labelWidth = 30d;
         const double rowHeight = 21d;
-        const double rightPadding = 10d;
+        const double rightPadding = 82d;
         var trackX = labelWidth;
         var trackWidth = Math.Max(20, width - labelWidth - rightPadding);
         var brush = GetGradient(trackX, trackWidth);
 
-        DrawRow(drawingContext, "L", trackX, 4, trackWidth, rowHeight, LeftLevel, LeftPeak, brush);
-        DrawRow(drawingContext, "R", trackX, 30, trackWidth, rowHeight, RightLevel, RightPeak, brush);
+        DrawRow(drawingContext, "L", trackX, 4, trackWidth, rowHeight, LeftLevel, LeftPeak, leftRms, brush);
+        DrawRow(drawingContext, "R", trackX, 30, trackWidth, rowHeight, RightLevel, RightPeak, rightRms, brush);
+        DrawPeakValue(drawingContext, LeftPeak, trackX + trackWidth + 8, 7);
+        DrawPeakValue(drawingContext, RightPeak, trackX + trackWidth + 8, 33);
+        if (clipped)
+        {
+            var text = new FormattedText("CLIP", System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight, new Typeface("Segoe UI"), 10, Brushes.OrangeRed, 1);
+            drawingContext.DrawText(text, new Point(Math.Max(0, width - text.Width - 8), 61));
+        }
         DrawScale(drawingContext, trackX, trackWidth, 62);
+    }
+
+    private void DrawPeakValue(DrawingContext context, double peak, double x, double y)
+    {
+        var value = peak <= 0 ? "−∞ dBFS" : $"{MinimumDb + peak * -MinimumDb:0.0} dBFS";
+        var text = new FormattedText(value, System.Globalization.CultureInfo.CurrentCulture,
+            FlowDirection.LeftToRight, new Typeface("Segoe UI"), 10, labelBrush, 1);
+        context.DrawText(text, new Point(x, y));
     }
 
     private LinearGradientBrush GetGradient(double x, double trackWidth)
@@ -175,14 +220,14 @@ private const double MinimumDb = -36d;
             StartPoint = new Point(x, 0),
             EndPoint = new Point(x + trackWidth, 0)
         };
-        // Klare Zonen: Grün nur bis ca. -25 dB, danach Gelb / Orange / Rot.
+        // Feste dBFS-Grenzen: Grün bis -12, Gelb bis -6, Orange bis -1, erst dann Rot.
         brush.GradientStops.Add(new GradientStop(Color.FromRgb(0x23, 0xA5, 0x5A), 0.00));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0x23, 0xA5, 0x5A), 0.29));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF2, 0xC8, 0x3C), 0.31));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF2, 0xC8, 0x3C), 0.68));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF0, 0x7A, 0x2E), 0.70));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF0, 0x7A, 0x2E), 0.86));
-        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xE7, 0x3C, 0x3C), 0.88));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0x23, 0xA5, 0x5A), 24d / 36));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF2, 0xC8, 0x3C), 24d / 36));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF2, 0xC8, 0x3C), 30d / 36));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF0, 0x7A, 0x2E), 30d / 36));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xF0, 0x7A, 0x2E), 35d / 36));
+        brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xE7, 0x3C, 0x3C), 35d / 36));
         brush.GradientStops.Add(new GradientStop(Color.FromRgb(0xE7, 0x3C, 0x3C), 1.00));
         brush.Freeze();
         gradient = brush;
@@ -191,26 +236,24 @@ private const double MinimumDb = -36d;
     }
 
     private void DrawRow(DrawingContext context, string label, double x, double y,
-        double width, double height, double level, double peak, Brush gradient)
+        double width, double height, double level, double peak, double rms, Brush gradient)
     {
         var track = new Rect(x, y, width, height);
         context.DrawRoundedRectangle(trackBrush, null, track, 3, 3);
-
-        // Farbzonen bleiben auch ohne Signal sichtbar, jedoch gedimmt.
-        context.PushOpacity(0.30);
-        context.DrawRoundedRectangle(gradient, null, track, 3, 3);
-        context.Pop();
 
         context.PushClip(new RectangleGeometry(new Rect(x, y, width * level, height)));
         context.DrawRoundedRectangle(gradient, null, track, 3, 3);
         context.Pop();
 
-        // 60 feine Schritte (1 dB) statt grober 20er-Raster – die Anzeige wirkt kontinuierlich.
-        for (var segment = 1; segment < 60; segment++)
+        // Ein Segment pro dB. Der unbeleuchtete Bereich bleibt dunkel.
+        for (var segment = 1; segment < -MinimumDb; segment++)
         {
-            var segmentX = x + width * segment / 60d;
+            var segmentX = x + width * segment / -MinimumDb;
             context.DrawRectangle(segmentBrush, null, new Rect(segmentX, y, 1, height));
         }
+
+        // RMS zuletzt zeichnen, damit der Peak-Balken ihn nicht verdeckt.
+        context.DrawRectangle(labelBrush, null, new Rect(x, y + height - 3, width * rms, 3));
 
         var peakX = Math.Min(x + width * peak, x + width - 3);
         context.DrawRectangle(peakBrush, null, new Rect(peakX, y - 2, 3, height + 4));

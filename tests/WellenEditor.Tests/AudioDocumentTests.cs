@@ -1,5 +1,6 @@
 ﻿using NAudio.Wave;
 using System.IO;
+using System.Runtime.InteropServices;
 using WellenEditor;
 using Xunit;
 using FluentAssertions;
@@ -8,6 +9,57 @@ namespace WellenEditorTests;
 
 public sealed class AudioDocumentTests
 {
+    [Fact]
+    public void MultitrackMixdownAppliesStartMuteSoloAndGain()
+    {
+        var first = AudioDocument.FromSamples(new[] { .5f, .5f, .5f, .5f }, 2, 48000);
+        var second = AudioDocument.FromSamples(new[] { .25f, .25f, .25f, .25f }, 2, 48000);
+        var project = new MultitrackProject();
+        project.Add(first);
+        project.Add(second);
+        project.Tracks[1].StartFrame = 1;
+        project.Tracks[1].Gain = 2;
+
+        project.RenderMixdown().Should().Equal(.5f, .5f, 1f, 1f, .5f, .5f);
+
+        project.Tracks[1].Muted = true;
+        project.RenderMixdown().Should().Equal(.5f, .5f, .5f, .5f);
+    }
+
+    [Fact]
+    public void LoopingWaveProviderRepeatsWithoutEndingAtClipBoundary()
+    {
+        var source = new ArrayWaveProvider(new[] { .25f, -.25f }, 0, 2, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
+        using var loop = new LoopingWaveProvider(source);
+        var bytes = new byte[sizeof(float) * 6];
+
+        loop.Read(bytes.AsSpan()).Should().Be(bytes.Length);
+
+        MemoryMarshal.Cast<byte, float>(bytes).ToArray().Should().Equal(.25f, -.25f, .25f, -.25f, .25f, -.25f);
+    }
+
+    [Fact]
+    public void SpectrogramCacheBuildsFrequencyImageFromAudioFrames()
+    {
+        var samples = Enumerable.Range(0, 8192).Select(index => MathF.Sin(index * .12f)).ToArray();
+        using var source = new MemoryAudioSource(samples, 1, 48000);
+
+        var cache = SpectrogramCache.Build(source, CancellationToken.None);
+
+        cache.Image.PixelWidth.Should().BeGreaterThanOrEqualTo(192);
+        cache.Image.PixelHeight.Should().Be(512);
+    }
+
+    private static string CreateStreamingTestWave(int frames, int channels = 2)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench_stream_{Guid.NewGuid():N}.wav");
+        using var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(48000, channels));
+        var samples = new float[frames * channels];
+        for (var index = 0; index < samples.Length; index++) samples[index] = (index % 101) / 100f - .5f;
+        writer.WriteSamples(samples, 0, samples.Length);
+        return path;
+    }
+
     private static AudioDocument CreateDocument()
     {
         var samples = new float[2400 * 2];
@@ -28,6 +80,120 @@ public sealed class AudioDocumentTests
             offset += read;
         }
         return buffer;
+    }
+
+    [Fact]
+    public void LoadWaveKeepsLargeSourceStreamedAndCreatesBoundedWaveformPreview()
+    {
+        var path = CreateStreamingTestWave(20_000);
+        try
+        {
+            var document = AudioDocument.Load(path);
+
+            document.IsStreaming.Should().BeTrue();
+            document.FrameCount.Should().Be(20_000);
+            document.WaveformSamples.Length.Should().Be(8_192 * 2,
+                "die Ansicht soll nur eine kleine Vorschau statt aller Samples halten");
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void StreamedDocumentCreatesDiskBackedWaveProviderForSelectedRange()
+    {
+        var path = CreateStreamingTestWave(2_000);
+        try
+        {
+            var document = AudioDocument.Load(path);
+            var provider = document.CreateWaveProvider(100, 25);
+            try
+            {
+                var bytes = new byte[25 * 2 * sizeof(float)];
+                provider.Read(bytes.AsSpan()).Should().Be(bytes.Length);
+                provider.Read(bytes.AsSpan()).Should().Be(0);
+                document.IsStreaming.Should().BeTrue("Wiedergabe darf die Quelldatei nicht materialisieren");
+            }
+            finally { (provider as IDisposable)?.Dispose(); }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void StreamedDeleteIsNonDestructiveAndUndoRedoRestoresTimeline()
+    {
+        var path = CreateStreamingTestWave(100);
+        try
+        {
+            var document = AudioDocument.Load(path);
+
+            document.Delete(new Selection(20, 50));
+            document.IsStreaming.Should().BeTrue();
+            document.FrameCount.Should().Be(70);
+            document.CanUndo.Should().BeTrue();
+
+            document.Undo();
+            document.IsStreaming.Should().BeTrue();
+            document.FrameCount.Should().Be(100);
+            document.CanRedo.Should().BeTrue();
+
+            document.Redo();
+            document.FrameCount.Should().Be(70);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void StreamedFadeIsRenderedByPlaybackProviderWithoutMaterializingSource()
+    {
+        var path = CreateStreamingTestWave(16);
+        try
+        {
+            var document = AudioDocument.Load(path);
+            document.FadeIn(new Selection(0, 4));
+
+            var provider = document.CreateWaveProvider(0, 4);
+            try
+            {
+                var bytes = new byte[4 * 2 * sizeof(float)];
+                provider.Read(bytes.AsSpan()).Should().Be(bytes.Length);
+                BitConverter.ToSingle(bytes, 0).Should().Be(0f, "der erste Frame eines Fade-Ins hat Gain 0");
+                document.IsStreaming.Should().BeTrue();
+            }
+            finally { (provider as IDisposable)?.Dispose(); }
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void StreamedWaveExportsEditedTimelineWithoutMaterializingDocument()
+    {
+        var sourcePath = CreateStreamingTestWave(100);
+        var targetPath = Path.Combine(Path.GetTempPath(), $"wavebench_export_{Guid.NewGuid():N}.wav");
+        try
+        {
+            var document = AudioDocument.Load(sourcePath);
+            document.Delete(new Selection(30, 60));
+
+            document.SaveAsWave(targetPath, 32);
+
+            using var exported = new WavFileAudioSource(targetPath);
+            exported.FrameCount.Should().Be(70);
+            document.IsStreaming.Should().BeTrue("ein Export darf die Quelldatei nicht materialisieren");
+
+            document.UpdateSourcePath(targetPath);
+            File.Delete(sourcePath);
+            var provider = document.CreateWaveProvider(0, 1);
+            try
+            {
+                provider.Read(new byte[2 * sizeof(float)]).Should().Be(2 * sizeof(float));
+            }
+            finally { (provider as IDisposable)?.Dispose(); }
+        }
+        finally
+        {
+            File.Delete(sourcePath);
+            if (File.Exists(targetPath)) File.Delete(targetPath);
+        }
     }
 
     [Fact]
@@ -272,5 +438,33 @@ public sealed class AudioDocumentTests
         var document = CreateDocument();
         var act = () => document.SaveAsMp3("x.mp3", 999);
         act.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Theory]
+    [InlineData(".flac")]
+    [InlineData(".ogg")]
+    [InlineData(".opus")]
+    public void SoundFileFormatsExportAndLoadWithoutExternalSetup(string extension)
+    {
+        var samples = Enumerable.Range(0, 960).Select(index => MathF.Sin(index * .1f) * .4f).ToArray();
+        var document = AudioDocument.FromSamples(samples, 2, 48000);
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench_format_{Guid.NewGuid():N}{extension}");
+        try
+        {
+            switch (extension)
+            {
+                case ".flac": document.SaveAsFlac(path); break;
+                case ".ogg": document.SaveAsOgg(path); break;
+                case ".opus": document.SaveAsOpus(path); break;
+            }
+
+            File.Exists(path).Should().BeTrue();
+            File.ReadAllBytes(path).Length.Should().BeGreaterThan(100);
+            var loaded = AudioDocument.Load(path);
+            loaded.Channels.Should().Be(2);
+            loaded.SampleRate.Should().Be(48000);
+            loaded.FrameCount.Should().BeGreaterThan(0);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
     }
 }

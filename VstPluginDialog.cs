@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -11,21 +12,26 @@ using NAudio.Vst3;
 
 namespace WellenEditor;
 
-/// <summary>Dialog für VST3-Plugins mit nativer Oberfläche, Parameter-Reglern und Vorschau.</summary>
+/// <summary>Dialog für VST3-Plugins mit nativer Oberfläche, Parameter-Reglern und Live-Vorschau.</summary>
 internal sealed class VstPluginDialog : Window
 {
     private readonly Vst3EffectDescriptor descriptor;
-    private readonly Vst3PluginView? view;
-    private readonly Vst3Plugin? plugin;
+    private Vst3Module? module;
+    private Vst3PluginView? view;
+    private Vst3Plugin? plugin;
     private readonly byte[]? initialState;
     private readonly List<Action> updaters = new();
     private byte[]? currentState;
     private bool updating;
 
-    public VstPluginDialog(Window owner, Vst3EffectDescriptor descriptor)
+    /// <summary>Wenn das Laden des Plugins fehlgeschlagen ist, hier die vollständige Fehlerausgabe.</summary>
+    public string? LoadErrorText { get; private set; }
+
+    public VstPluginDialog(Window owner, Vst3EffectDescriptor descriptor, int sampleRate = 44100)
     {
         Owner = owner;
         this.descriptor = descriptor ?? throw new ArgumentNullException(nameof(descriptor));
+        var rate = sampleRate > 0 ? sampleRate : 44100;
 
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         ResizeMode = ResizeMode.CanResize;
@@ -35,41 +41,121 @@ internal sealed class VstPluginDialog : Window
         ShowInTaskbar = false;
         FontFamily = new FontFamily("Segoe UI");
         FontSize = 13;
-        Background = Application.Current.FindResource("Surface") as Brush ?? Brushes.Black;
-        Foreground = Application.Current.FindResource("Text") as Brush ?? Brushes.White;
+        Background = Application.Current.TryFindResource("Surface") as Brush ?? Brushes.Black;
+        Foreground = Application.Current.TryFindResource("Text") as Brush ?? Brushes.White;
 
-        using var module = Vst3Module.Load(descriptor.Path);
-        plugin = module.CreatePlugin(descriptor.ClassInfo, 44100, 512);
-        view = plugin.CreateView();
-        initialState = plugin.SaveState();
-        currentState = initialState;
+        try
+        {
+            module = Vst3Module.Load(descriptor.Path);
+            // Echte ClassInfo aus dem Modul lösen (funktioniert auch mit Cache-ClassInfo, die nur die ClassId trägt)
+            var classInfo = Vst3EffectCatalog.ResolveClassInfo(module, descriptor.ClassInfo.ClassId);
+            plugin = module.CreatePlugin(classInfo, rate, 512);
+            view = plugin.CreateView();
+            initialState = plugin.SaveState();
+            currentState = initialState;
+            // HINWEIS: module/plugin/view leben bewusst über die Dialog-Lebensdauer hinaus
+            // (Dispose in OnClosed). NICHT "using" – sonst ObjectDisposedException beim 2. Öffnen.
+        }
+        catch (Exception ex)
+        {
+            LoadErrorText = BuildErrorText(ex, descriptor);
+            try { plugin?.Dispose(); } catch { }
+            try { module?.Dispose(); } catch { }
+            plugin = null; view = null; module = null;
+        }
 
         Title = $"{descriptor.DisplayName} – VST3";
-        BuildUi();
+        try
+        {
+            BuildUi();
+        }
+        catch (Exception uiEx)
+        {
+            LoadErrorText = BuildErrorText(uiEx, descriptor);
+            BuildErrorUi();
+        }
     }
 
-    public byte[]? ResultState => plugin?.SaveState() ?? initialState;
+    /// <summary>Aktueller Plugin-State – wird beim OK-Klick gesichert, bevor das Plugin disposed wird.</summary>
+    public byte[]? ResultState { get; private set; }
 
-    public event Action<byte[]>? PreviewRequested;
+    /// <summary>Live-Vorschau: MainWindow bekommt das laufende Plugin-Objekt, während der Dialog offen ist.</summary>
+    public event Action<Vst3Plugin?>? LivePreviewRequested;
+
+    /// <summary>Baut eine vollständige Fehlerausgabe aus der Exception-Kette (inkl. InnerException + StackTrace).</summary>
+    private static string BuildErrorText(Exception ex, Vst3EffectDescriptor descriptor)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"VST3-Plugin konnte nicht geladen werden: {descriptor.Name}");
+        sb.AppendLine($"Pfad:        {descriptor.Path}");
+        sb.AppendLine($"ClassInfo:   {descriptor.ClassInfo}");
+        sb.AppendLine();
+
+        var current = ex;
+        int depth = 0;
+        while (current != null)
+        {
+            if (depth > 0) sb.AppendLine("--- Innere Exception ---");
+            sb.AppendLine($"Typ:        {current.GetType().FullName}");
+            sb.AppendLine($"Nachricht:  {current.Message}");
+            sb.AppendLine($"Source:     {current.Source}");
+            if (!string.IsNullOrWhiteSpace(current.StackTrace))
+                sb.AppendLine($"StackTrace:\n{current.StackTrace}");
+            if (current.Data?.Count > 0)
+            {
+                sb.AppendLine("Data:");
+                foreach (System.Collections.DictionaryEntry entry in current.Data)
+                    sb.AppendLine($"  {entry.Key}: {entry.Value}");
+            }
+            current = current.InnerException;
+            depth++;
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("--- Geladene VST3-relevante Module im Prozess ---");
+        try
+        {
+            var vstDlls = System.Diagnostics.Process.GetCurrentProcess().Modules
+                .OfType<System.Diagnostics.ProcessModule>()
+                .Where(m => m.ModuleName?.IndexOf("vst", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                            m.ModuleName?.IndexOf("naudio", StringComparison.OrdinalIgnoreCase) >= 0)
+                .OrderBy(m => m.ModuleName, StringComparer.OrdinalIgnoreCase);
+            foreach (var m in vstDlls)
+                sb.AppendLine($"{m.ModuleName}  @ {m.FileName}");
+            if (!vstDlls.Any())
+                sb.AppendLine("(keine vst/naudio-Module im Prozess geladen)");
+        }
+        catch (Exception loadEx)
+        {
+            sb.AppendLine($"Modulauflistung fehlgeschlagen: {loadEx.Message}");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine("Tipp: Kopieren Sie diesen Text und senden Sie ihn zur Fehleranalyse.");
+        return sb.ToString();
+    }
 
     private void BuildUi()
     {
+        // Fehlerfall: Zeige den Debug-Text statt des Plugin-UI
+        if (LoadErrorText != null)
+        {
+            BuildErrorUi();
+            return;
+        }
+
         var scale = 1.0;
         if (PresentationSource.FromVisual(this) is HwndSource source)
             scale = source.CompositionTarget.TransformToDevice.M11;
-
-        var root = new DockPanel { Margin = new Thickness(12) };
 
         // Header
         var header = new TextBlock
         {
             Text = $"{descriptor.DisplayName} auf die Auswahl anwenden (ohne Auswahl auf den gesamten Clip).",
             TextWrapping = TextWrapping.Wrap,
-            Foreground = Application.Current.FindResource("Muted") as Brush ?? Brushes.Gray,
+            Foreground = Application.Current.TryFindResource("Muted") as Brush ?? Brushes.Gray,
             Margin = new Thickness(0, 0, 0, 10)
         };
-        DockPanel.SetDock(header, Dock.Top);
-        root.Children.Add(header);
 
         // Plugin UI (links) + Parameter (rechts)
         var mainGrid = new Grid();
@@ -88,7 +174,7 @@ internal sealed class VstPluginDialog : Window
         mainGrid.Children.Add(host);
 
         // Separator
-        var separator = new GridSplitter { Width = 4, HorizontalAlignment = HorizontalAlignment.Center, Background = Application.Current.FindResource("Border") as Brush ?? Brushes.Gray };
+        var separator = new GridSplitter { Width = 4, HorizontalAlignment = HorizontalAlignment.Center, Background = Application.Current.TryFindResource("Line") as Brush ?? Brushes.Gray };
         Grid.SetColumn(separator, 1);
         mainGrid.Children.Add(separator);
 
@@ -118,13 +204,13 @@ internal sealed class VstPluginDialog : Window
             HorizontalAlignment = HorizontalAlignment.Right,
             Margin = new Thickness(0, 14, 0, 0)
         };
-        var previewBtn = new Button { Content = "Vorschau", MinWidth = 100, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
-        previewBtn.Click += (_, _) => PreviewRequested?.Invoke(currentState ?? initialState!);
+        var liveBtn = new Button { Content = "Live ▶", MinWidth = 80, Margin = new Thickness(0, 0, 8, 0), FontSize = 13, ToolTip = "Spielt die Auswahl in Schleife durch das Plugin ab – Regler im Plugin wirken sofort hörbar." };
+        liveBtn.Click += (_, _) => LivePreviewRequested?.Invoke(plugin);
         var okBtn = new Button { Content = "OK", IsDefault = true, MinWidth = 96, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
-        okBtn.Click += (_, _) => { DialogResult = true; };
+        okBtn.Click += (_, _) => { ResultState = plugin?.SaveState() ?? currentState ?? initialState; DialogResult = true; };
         var cancelBtn = new Button { Content = "Abbrechen", IsCancel = true, MinWidth = 110, FontSize = 13 };
         cancelBtn.Click += (_, _) => { DialogResult = false; };
-        buttons.Children.Add(previewBtn);
+        buttons.Children.Add(liveBtn);
         buttons.Children.Add(okBtn);
         buttons.Children.Add(cancelBtn);
 
@@ -144,6 +230,52 @@ internal sealed class VstPluginDialog : Window
         outerGrid.Children.Add(buttonBorder);
 
         Content = outerGrid;
+    }
+
+    /// <summary>Zeigt den vollständigen Fehlertext in einer kopierbaren TextBox.</summary>
+    private void BuildErrorUi()
+    {
+        var root = new DockPanel { Margin = new Thickness(12) };
+
+        var header = new TextBlock
+        {
+            Text = "VST3-Plugin konnte nicht geladen werden – Debug-Informationen",
+            FontWeight = FontWeights.Bold,
+            Foreground = Application.Current.TryFindResource("Muted") as Brush ?? Brushes.Gray,
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        DockPanel.SetDock(header, Dock.Top);
+        root.Children.Add(header);
+
+        var textBox = new TextBox
+        {
+            Text = LoadErrorText,
+            IsReadOnly = true,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 10,
+            AcceptsReturn = true,
+            Background = Application.Current.TryFindResource("Panel") as Brush ?? Brushes.DarkGray,
+            Foreground = Application.Current.TryFindResource("Text") as Brush ?? Brushes.White,
+            Height = 400
+        };
+        root.Children.Add(textBox);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 12, 0, 0)
+        };
+        var okBtn = new Button { Content = "OK", IsDefault = true, MinWidth = 80, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
+        okBtn.Click += (_, _) => { DialogResult = true; };
+        buttons.Children.Add(okBtn);
+        DockPanel.SetDock(buttons, Dock.Bottom);
+        root.Children.Add(buttons);
+
+        Content = root;
     }
 
     private void AddParameterRow(StackPanel panel, Vst3Parameter param)
@@ -214,7 +346,16 @@ internal sealed class VstPluginDialog : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        // Zuerst die Live-Vorschau stoppen – sie läuft evtl. auf einem WasapiOut-Thread
+        // durch DIESES Plugin und darf nicht auf einem disposed Plugin weiterlaufen.
+        try { LivePreviewRequested?.Invoke(null); } catch { }
+        // Reihenfolge kritisch gegen nativen Crash beim 2. Öffnen:
+        // 1) View vom HWND lösen (Detach), 2) View disposen, 3) Plugin disposen, 4) Modul disposen.
+        try { view?.Detach(); } catch { }
+        try { view?.Dispose(); } catch { }
+        try { plugin?.Dispose(); } catch { }
+        try { module?.Dispose(); } catch { }
+        view = null; plugin = null; module = null;
         base.OnClosed(e);
-        // view und plugin werden via HwndHost.Dispose() aufgeräumt
     }
 }

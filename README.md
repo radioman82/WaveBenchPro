@@ -1,49 +1,57 @@
 # WaveBench Pro
 
-WaveBench Pro ist ein portabler Windows-Audioeditor für die direkte Einzelspurbearbeitung. Die Bedienung orientiert sich an klassischen Wellenform-Editoren: Datei öffnen, Bereich markieren, bearbeiten, exportieren.
+Nativer Windows-Audioeditor mit klassischer Wellenformansicht und einer Mehrspur-Zeitleiste. Entwickelt mit C#, WPF, .NET 9 und NAudio.
 
-## About
+## Aktueller Entwicklungsstand
 
-Aktueller Stand v0.4: Neben Undo/Redo, Aufnahme und WAV-/MP3-Export sind native Effekte mit Presets und Vorschau sowie VST3-Offline-Rendering enthalten. Die Oberfläche ist dunkel und auf Lesbarkeit getrimmt; beim Schließen oder Entfernen von Dateien mit ungespeicherten Änderungen fragt das Programm nach. Entwickelt als .NET-9-WPF-Anwendung mit NAudio.
+- Einzeldateien bearbeiten: Auswahl, Ausschneiden, Kopieren, Einfügen, Trimmen, Undo/Redo und Loop-Wiedergabe.
+- WAV-Dateien blockweise lesen; Wellenform-Vorschauen werden im Hintergrund berechnet. Andere unterstützte Formate werden beim Import dekodiert.
+- WAV, FLAC, MP3, OGG und Opus importieren und exportieren; Exportparameter im Dialog einstellen.
+- Wellenform und Spektrogramm; horizontale und vertikale Zoom-Tasten unten, jeweils mit eigenem Reset.
+- Stereo-Pegelmesser mit Peak, RMS, Peak-Hold, dBFS-Zahlen und CLIP-Anzeige.
+- Windows-Wiedergabe und Aufnahme über WASAPI; Geräteauswahl unter Optionen.
+- Native Effekte: Verstärkung, Normalisierung, Fades, EQ, Hoch-/Tiefpass, Kompressor und Limiter.
+- VST3-Scan, Plugin-Oberflächen, Live-Abhören und Offline-Anwendung im Einzeldatei-Editor; installierte Drittanbieter-Plugins werden nicht mitgeliefert.
+- Mehrspur: Dateien aus dem Organizer auf die Zeitleiste ziehen; eine neue Spur entsteht beim Ablegen in einer freien Zeile.
+- Beat-/Taktraster im 4/4-Takt, BPM-Einstellung und Tempoanpassung vorbereiteter Clips. Die Tempoerkennung liest eine BPM-Zahl aus passenden Dateinamen; es gibt noch keine automatische Audioanalyse des Tempos.
+- Stumm/Solo, Lautstärke und Panorama pro Spur, verschiebbare Clips und Mixdown.
+- Live verschiebbarer Loop-Bereich im Zeitlineal. Start, Ende und Dauer unten beziehen sich in Mehrspur auf diesen Bereich.
+- Pro Spur ein FX-Rack mit Verstärkung, EQ, Hoch-/Tiefpass, Kompressor und Limiter. Diese Spur-Effekte verändern die Quelldateien nicht; VST3-Inserts pro Spur sind noch nicht enthalten.
 
-## Enthalten
+Mehrspur ist weiterhin im Aufbau. Ein vollständiges Speichern und Wiederherstellen von Mehrspur-Projekten ist noch nicht implementiert.
 
-- Menüleiste für Datei, Bearbeiten, Ansicht, Effekte und Optionen
-- Organizer, Symbolleisten, Zeit- und Auswahlstatus
-- Wellenformansicht mit Bereichsauswahl, Zoom und gelber Markierung
-- Wiedergabe und Aufnahme mit Pegelanzeige
-- Ausschneiden, Kopieren, Einfügen, Löschen, Rückgängig und Wiederholen
-- Sicherheitsdialoge: Speichern, Schließen ohne Speichern oder Abbrechen
-- Native Effekte mit Presets und Vorschau: Verstärken, Normalisieren, Ein-/Ausblenden, EQ, Hoch-/Tiefpass, Kompressor und Limiter
-- VST3-Scan und Offline-Rendering auf Auswahl oder gesamte Datei
-- Export als WAV (PCM 16/24 Bit, 32-Bit-Float) und MP3
-- Auswahl der aktiven Windows-Wiedergabe- und Aufnahmegeräte unter `Optionen > Audio-Hardware`
-- Dunkle, lesbare Menüs und Dialoge
+## Entwickeln und testen
 
-## VST3
-
-VST3-Effekte werden über `Effekte > VST3-Effekte neu scannen` erkannt und per Doppelklick offline auf die Auswahl bzw. die ganze Datei angewendet. Instrumente werden übersprungen. Plugin-Oberflächen, Parametersteuerung, Presets und eine Insertkette sind noch nicht enthalten; die Plugins laufen mit ihrem Default-Zustand.
-
-## Starten während der Entwicklung
+Voraussetzung: Windows und .NET-9-SDK. Alternativ kann das vorhandene lokale SDK unter `.tooling\dotnet\dotnet.exe` verwendet werden. Das SDK selbst gehört nicht ins Repository.
 
 ```powershell
-dotnet run
+dotnet restore .\WellenEditor.csproj
+dotnet build .\WellenEditor.csproj -c Release
+dotnet test .\tests\WellenEditor.Tests\WellenEditor.Tests.csproj
 ```
 
-## Portable EXE erzeugen
+Die Entwicklungs-EXE liegt hier und benötigt die mitgebauten Dateien im selben Ordner:
+
+```text
+bin\Release\net9.0-windows\win-x64\WaveBenchPro.exe
+```
+
+`START_WaveBenchPro.cmd` öffnet genau diese EXE. DLLs in ihrem Ausgabeordner nicht einzeln entfernen.
+
+## Portable Version
 
 ```powershell
-dotnet publish -c Release
+dotnet publish .\WellenEditor.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
 ```
 
-Die einzelne portable Datei liegt anschließend unter `bin\Release\net9.0-windows\win-x64\publish\WaveBenchPro.exe`.
+Die portable EXE liegt anschließend unter:
 
-## Bedienung
+```text
+bin\Release\net9.0-windows\win-x64\publish\WaveBenchPro.exe
+```
 
-- Audiodatei öffnen oder in das Fenster ziehen
-- Mit linker Maustaste einen Bereich markieren
-- Rechte Maustaste setzt den Wiedergabecursor
-- Mausrad zoomt die Wellenform
-- Leertaste startet und stoppt die Wiedergabe
-- Entf löscht die Auswahl, Strg+Z macht die letzte Änderung rückgängig
-- Ausschneiden legt den Bereich für Einfügen am Cursor ab
+Fertige portable Builds gehören als Assets in GitHub Releases, nicht in die Git-Quellhistorie. Die älteren `build_img.cmd`/`build_img.ps1` sind alternative Publish-Helfer mit Zielordner `Release`.
+
+## Dateien und Aufräumen
+
+Eine Bestandsaufnahme mit Hinweisen zu benötigten Dateien und entfernbaren Ausgaben steht in [docs/Ordnerstruktur.md](docs/Ordnerstruktur.md). Lokale Audiodateien, Samples, das SDK und Build-Ausgaben sind bewusst vom Git-Backup ausgeschlossen. Es werden keine Drittanbieter-VSTs oder Sample-Pakete hochgeladen.

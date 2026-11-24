@@ -16,12 +16,13 @@ public static class Vst3OfflineRenderer
     /// Der Host rechnet intern stereo; Mono-Spuren werden auf links Stereo hoch- und danach
     /// wieder auf Mono zurückgerechnet. Die Länge bleibt unverändert.
     /// </summary>
-    public static float[] Render(Vst3EffectDescriptor descriptor, ISampleProvider source, int sourceChannels, int frames, byte[]? state = null)
+    public static float[] Render(Vst3EffectDescriptor descriptor, ISampleProvider source, int sampleRate, int sourceChannels, int frames, byte[]? state = null)
     {
         ArgumentNullException.ThrowIfNull(descriptor);
         ArgumentNullException.ThrowIfNull(source);
         if (frames <= 0) return Array.Empty<float>();
         if (sourceChannels is < 1 or > 2) throw new ArgumentOutOfRangeException(nameof(sourceChannels), "Nur Mono und Stereo werden unterstützt.");
+        var rate = sampleRate > 0 ? sampleRate : source.WaveFormat.SampleRate;
 
         var stereo = new float[frames * 2];
         var input = new float[BlockSize * sourceChannels];
@@ -50,11 +51,12 @@ public static class Vst3OfflineRenderer
         }
 
         using var module = Vst3Module.Load(descriptor.Path);
-        using var plugin = module.CreatePlugin(descriptor.ClassInfo, source.WaveFormat.SampleRate, BlockSize);
+        var classInfo = Vst3EffectCatalog.ResolveClassInfo(module, descriptor.ClassInfo.ClassId);
+        using var plugin = module.CreatePlugin(classInfo, rate, BlockSize);
         if (state != null && state.Length > 0)
             plugin.LoadState(state);
         var effect = new Vst3EffectSampleProvider(
-            new ArraySampleProvider(stereo, WaveFormat.CreateIeeeFloatWaveFormat(source.WaveFormat.SampleRate, 2)),
+            new ArraySampleProvider(stereo, WaveFormat.CreateIeeeFloatWaveFormat(rate, 2)),
             plugin)
         {
             RenderTail = true,
@@ -62,7 +64,7 @@ public static class Vst3OfflineRenderer
             CompensateLatency = true
         };
 
-        var rendered = new List<float>((frames + source.WaveFormat.SampleRate) * 2);
+        var rendered = new List<float>((frames + rate) * 2);
         var output = new float[BlockSize * 2];
         int count;
         while ((count = effect.Read(output.AsSpan())) > 0)

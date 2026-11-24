@@ -8,6 +8,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>app.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <RuntimeIdentifier>win-x64</RuntimeIdentifier>
@@ -19,9 +20,12 @@
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="**\*.cs" Exclude="tests\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
+    <Compile Include="**\*.cs" Exclude="tests\**\*.cs;.tooling\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
+    <InternalsVisibleTo Include="WellenEditor.Tests" />
     <PackageReference Include="NAudio" Version="3.3.0" />
     <PackageReference Include="NAudio.Vst3" Version="3.3.0" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" />
+    <PackageReference Include="NAudio.SoundFile" Version="3.3.0" />
+    <PackageReference Include="org.sndfile.runtime.win-x64" Version="1.2.2" />
   </ItemGroup>
 </Project>

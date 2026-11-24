@@ -10,6 +10,7 @@
     <SolidColorBrush x:Key="Hover" Color="#FF2B3A4A" />
     <SolidColorBrush x:Key="Line" Color="#FF33414F" />
     <SolidColorBrush x:Key="Accent" Color="#FF39BCA8" />
+    <SolidColorBrush x:Key="AccentLight" Color="#FF7BE0D0" />
     <SolidColorBrush x:Key="AccentDark" Color="#FF245A52" />
     <SolidColorBrush x:Key="Text" Color="#FFE6EDF3" />
     <SolidColorBrush x:Key="Muted" Color="#FF93BEB1" />

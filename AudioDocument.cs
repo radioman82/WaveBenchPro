@@ -1,37 +1,83 @@
 ﻿using NAudio.Lame;
+using NAudio.SoundFile;
 using NAudio.Wave;
 using System.IO;
 using System.Runtime.InteropServices;
 
 namespace WellenEditor;
 
-public sealed class AudioDocument
+public sealed class AudioDocument : IDisposable
 {
     private const int MaxUndoSteps = 20;
+    private const int WaveformPreviewFrames = 8192;
 
     private readonly Stack<float[]> undoHistory = new();
     private readonly Stack<float[]> redoHistory = new();
+    private float[] samples;
+    private float[] waveformSamples;
+    private string? streamingWavPath;
+    private int streamingFrameCount;
+    private List<AudioSourceSegment>? streamingSegments;
+    private readonly Stack<List<AudioSourceSegment>> streamingUndoHistory = new();
+    private readonly Stack<List<AudioSourceSegment>> streamingRedoHistory = new();
+    private CancellationTokenSource? peakCacheCancellation;
+    private CancellationTokenSource? spectrogramCancellation;
+    private bool spectrogramBuilding;
 
     private AudioDocument(string sourcePath, float[] samples, int channels, int sampleRate)
     {
         SourcePath = sourcePath;
-        Samples = samples;
+        this.samples = samples;
+        waveformSamples = samples;
         Channels = channels;
         SampleRate = sampleRate;
         DisplayName = string.IsNullOrWhiteSpace(sourcePath) ? string.Empty : Path.GetFileName(sourcePath);
         IsModified = false;
     }
 
+    private AudioDocument(string sourcePath, WavFileAudioSource source, float[] preview)
+    {
+        SourcePath = sourcePath;
+        samples = Array.Empty<float>();
+        waveformSamples = preview;
+        streamingWavPath = sourcePath;
+        streamingFrameCount = checked((int)source.FrameCount);
+        streamingSegments = new List<AudioSourceSegment> { new(0, source.FrameCount) };
+        Channels = source.Channels;
+        SampleRate = source.SampleRate;
+        DisplayName = Path.GetFileName(sourcePath);
+        IsModified = false;
+    }
+
     public string SourcePath { get; private set; }
-    public float[] Samples { get; private set; }
+    /// <summary>
+    /// Vollständige Samples für Bearbeitung und Export. Bei einer gestreamten WAV-Datei
+    /// wird erst beim expliziten Bearbeitungszugriff materialisiert.
+    /// </summary>
+    public float[] Samples
+    {
+        get
+        {
+            EnsureMaterialized();
+            return samples;
+        }
+        private set => samples = value;
+    }
+    /// <summary>Kleine Anzeige-Repräsentation für die Wellenform; lädt keine ganze WAV-Datei.</summary>
+    public float[] WaveformSamples => waveformSamples;
+    public bool IsStreaming => streamingWavPath is not null;
+    internal WaveformPeakCache? PeakCache { get; private set; }
+    internal event EventHandler? PeakCacheReady;
+    internal SpectrogramCache? Spectrogram { get; private set; }
+    internal event EventHandler? SpectrogramReady;
     public string DisplayName { get; set; }
     public bool IsModified { get; private set; }
     public int Channels { get; }
     public int SampleRate { get; }
-    public int FrameCount => Samples.Length / Channels;
+    public int FrameCount => IsStreaming ? streamingFrameCount : samples.Length / Channels;
     public TimeSpan Duration => TimeSpan.FromSeconds(FrameCount / (double)SampleRate);
-    public bool CanUndo => undoHistory.Count > 0;
-    public bool CanRedo => redoHistory.Count > 0;
+    public bool CanUndo => IsStreaming ? streamingUndoHistory.Count > 0 : undoHistory.Count > 0;
+    public bool CanRedo => IsStreaming ? streamingRedoHistory.Count > 0 : redoHistory.Count > 0;
 
     public static AudioDocument FromSamples(float[] samples, int channels, int sampleRate, string? sourcePath = null)
     {
@@ -44,20 +90,43 @@ public sealed class AudioDocument
     public static AudioDocument Load(string path)
     {
         var fullPath = Path.GetFullPath(path);
+        if (string.Equals(Path.GetExtension(fullPath), ".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            using var source = new WavFileAudioSource(fullPath);
+            if (source.FrameCount == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
+            if (source.FrameCount > int.MaxValue)
+                throw new NotSupportedException("WAV-Dateien mit mehr als 2.147.483.647 Frames werden in dieser Ansicht noch nicht unterstützt.");
+            var document = new AudioDocument(fullPath, source, BuildWaveformPreview(source));
+            document.StartPeakCacheBuild();
+            return document;
+        }
+
+        if (Path.GetExtension(fullPath).ToLowerInvariant() is ".flac" or ".ogg" or ".opus" or ".mp3")
+        {
+            using var soundFileReader = new SoundFileReader(fullPath);
+            return LoadDecodedSoundFile(fullPath, soundFileReader, soundFileReader.WaveFormat);
+        }
+
         using var reader = new AudioFileReader(fullPath);
+        return LoadDecodedSoundFile(fullPath, reader, reader.WaveFormat);
+    }
+
+    private static AudioDocument LoadDecodedSoundFile(string path, ISampleProvider reader, WaveFormat waveFormat)
+    {
         var samples = new List<float>();
-        var buffer = new float[reader.WaveFormat.SampleRate * reader.WaveFormat.Channels];
+        var buffer = new float[waveFormat.SampleRate * waveFormat.Channels];
         int read;
         while ((read = reader.Read(buffer.AsSpan())) > 0)
         {
             samples.AddRange(buffer.AsSpan(0, read).ToArray());
         }
         if (samples.Count == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
-        return new AudioDocument(fullPath, samples.ToArray(), reader.WaveFormat.Channels, reader.WaveFormat.SampleRate);
+        return new AudioDocument(path, samples.ToArray(), waveFormat.Channels, waveFormat.SampleRate);
     }
 
     public ISampleProvider CreateSampleProvider(int startFrame, int frames)
     {
+        EnsureMaterialized();
         var boundedStart = Math.Clamp(startFrame, 0, FrameCount);
         var boundedFrames = Math.Clamp(frames, 0, FrameCount - boundedStart);
         var selection = new float[boundedFrames * Channels];
@@ -69,7 +138,164 @@ public sealed class AudioDocument
     {
         var boundedStart = Math.Clamp(startFrame, 0, FrameCount);
         var boundedFrames = Math.Clamp(frames, 0, FrameCount - boundedStart);
+        if (streamingWavPath is not null)
+            return new StreamingWaveProvider(CreateSegmentedSource(), boundedStart, boundedFrames);
         return new ArrayWaveProvider(Samples, boundedStart * Channels, boundedFrames * Channels, WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels));
+    }
+
+    /// <summary>Materialisiert eine gestreamte Datei für einen destruktiven Bearbeitungsvorgang.</summary>
+    public void EnsureMaterialized()
+    {
+        if (streamingWavPath is null) return;
+
+        var sampleCount = checked((long)streamingFrameCount * Channels);
+        if (sampleCount > Array.MaxLength)
+            throw new NotSupportedException("Diese Datei ist für die bisherige destruktive Bearbeitung zu groß. Wiedergabe bleibt per Disk-Streaming möglich.");
+
+        var loaded = new float[(int)sampleCount];
+        using var source = CreateSegmentedSource();
+        const int blockFrames = 4096;
+        for (var frame = 0; frame < streamingFrameCount; frame += blockFrames)
+        {
+            var count = Math.Min(blockFrames, streamingFrameCount - frame);
+            var read = source.ReadFrames(frame, loaded, frame, count);
+            if (read != count) throw new EndOfStreamException("Die WAV-Datei konnte nicht vollständig für die Bearbeitung gelesen werden.");
+        }
+
+        samples = loaded;
+        waveformSamples = loaded;
+        streamingWavPath = null;
+        streamingFrameCount = 0;
+        streamingSegments = null;
+        streamingUndoHistory.Clear();
+        streamingRedoHistory.Clear();
+        peakCacheCancellation?.Cancel();
+        PeakCache = null;
+    }
+
+    private static float[] BuildWaveformPreview(IAudioSource source)
+    {
+        var previewFrames = (int)Math.Min(WaveformPreviewFrames, source.FrameCount);
+        var preview = new float[checked(previewFrames * source.Channels)];
+        if (previewFrames == 0) return preview;
+
+        for (var index = 0; index < previewFrames; index++)
+        {
+            var sourceFrame = index * source.FrameCount / previewFrames;
+            if (source.ReadFrames(sourceFrame, preview, index, 1) != 1)
+                throw new EndOfStreamException("Die WAV-Datei konnte nicht für die Wellenform gelesen werden.");
+        }
+        return preview;
+    }
+
+    private void StartPeakCacheBuild()
+    {
+        if (streamingWavPath is null || streamingFrameCount == 0) return;
+        var path = streamingWavPath;
+        var segments = streamingSegments!.ToArray();
+        peakCacheCancellation = new CancellationTokenSource();
+        var cancellation = peakCacheCancellation;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                using var source = new SegmentedAudioSource(new WavFileAudioSource(path), segments);
+                var cache = WaveformPeakCache.Build(source, cancellation.Token);
+                if (cancellation.IsCancellationRequested) return;
+                PeakCache = cache;
+                PeakCacheReady?.Invoke(this, EventArgs.Empty);
+            }
+            catch (OperationCanceledException) { }
+            catch { /* Die sofortige Vorschau bleibt bei fehlerhaften Hintergrund-Scans nutzbar. */ }
+        });
+    }
+
+    internal void RequestSpectrogram()
+    {
+        if (Spectrogram is not null || spectrogramBuilding || FrameCount == 0) return;
+        spectrogramBuilding = true;
+        spectrogramCancellation?.Cancel();
+        spectrogramCancellation = new CancellationTokenSource();
+        var cancellation = spectrogramCancellation;
+        var path = streamingWavPath;
+        var segments = streamingSegments?.ToArray();
+        var memory = streamingWavPath is null ? samples : null;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                using IAudioSource source = path is not null
+                    ? new SegmentedAudioSource(new WavFileAudioSource(path), segments!)
+                    : new MemoryAudioSource(memory!, Channels, SampleRate);
+                var cache = SpectrogramCache.Build(source, cancellation.Token);
+                if (!cancellation.IsCancellationRequested)
+                {
+                    Spectrogram = cache;
+                    SpectrogramReady?.Invoke(this, EventArgs.Empty);
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally { spectrogramBuilding = false; }
+        });
+    }
+
+    private SegmentedAudioSource CreateSegmentedSource()
+    {
+        if (streamingWavPath is null || streamingSegments is null) throw new InvalidOperationException("Das Dokument wird nicht per Disk-Streaming bereitgestellt.");
+        return new SegmentedAudioSource(new WavFileAudioSource(streamingWavPath), streamingSegments.ToArray());
+    }
+
+    private void SaveStreamingUndo()
+    {
+        streamingUndoHistory.Push(streamingSegments!.ToList());
+        streamingRedoHistory.Clear();
+        if (streamingUndoHistory.Count <= MaxUndoSteps) return;
+        var retained = streamingUndoHistory.Take(MaxUndoSteps).Reverse().ToArray();
+        streamingUndoHistory.Clear();
+        foreach (var state in retained) streamingUndoHistory.Push(state);
+    }
+
+    private void ApplyStreamingEdit(List<AudioSourceSegment> segments)
+    {
+        SaveStreamingUndo();
+        streamingSegments = segments.Where(segment => segment.FrameCount > 0).ToList();
+        streamingFrameCount = checked((int)streamingSegments.Sum(segment => segment.FrameCount));
+        IsModified = true;
+        RefreshStreamingVisuals();
+    }
+
+    private void RefreshStreamingVisuals()
+    {
+        peakCacheCancellation?.Cancel();
+        PeakCache = null;
+        InvalidateSpectrogram();
+        using (var source = CreateSegmentedSource()) waveformSamples = BuildWaveformPreview(source);
+        PeakCacheReady?.Invoke(this, EventArgs.Empty);
+        StartPeakCacheBuild();
+    }
+
+    private List<AudioSourceSegment> SliceStreamingTimeline(long startFrame, long frameCount)
+    {
+        var result = new List<AudioSourceSegment>();
+        var endFrame = startFrame + frameCount;
+        var timeline = 0L;
+        foreach (var segment in streamingSegments!)
+        {
+            var segmentEnd = timeline + segment.FrameCount;
+            var overlapStart = Math.Max(startFrame, timeline);
+            var overlapEnd = Math.Min(endFrame, segmentEnd);
+            if (overlapEnd > overlapStart) result.Add(segment.Slice(overlapStart - timeline, overlapEnd - overlapStart));
+            timeline = segmentEnd;
+        }
+        return result;
+    }
+
+    public void Dispose()
+    {
+        peakCacheCancellation?.Cancel();
+        peakCacheCancellation?.Dispose();
+        spectrogramCancellation?.Cancel();
+        spectrogramCancellation?.Dispose();
     }
 
     public AudioSelectionData Extract(Selection selection)
@@ -92,6 +318,14 @@ public sealed class AudioDocument
 
     public void Delete(Selection selection)
     {
+        if (IsStreaming)
+        {
+            if (selection.Length <= 0) return;
+            var before = SliceStreamingTimeline(0, selection.StartSample);
+            before.AddRange(SliceStreamingTimeline(selection.EndSample, FrameCount - selection.EndSample));
+            ApplyStreamingEdit(before);
+            return;
+        }
         SaveUndo();
         var start = selection.StartSample * Channels;
         var count = selection.Length * Channels;
@@ -103,6 +337,12 @@ public sealed class AudioDocument
 
     public void Keep(Selection selection)
     {
+        if (IsStreaming)
+        {
+            if (selection.Length <= 0) return;
+            ApplyStreamingEdit(SliceStreamingTimeline(selection.StartSample, selection.Length));
+            return;
+        }
         SaveUndo();
         var edited = new float[selection.Length * Channels];
         Array.Copy(Samples, selection.StartSample * Channels, edited, 0, edited.Length);
@@ -124,6 +364,15 @@ public sealed class AudioDocument
 
     public void Undo()
     {
+        if (IsStreaming)
+        {
+            if (!streamingUndoHistory.TryPop(out var streamedRestored)) return;
+            streamingRedoHistory.Push(streamingSegments!.ToList());
+            streamingSegments = streamedRestored;
+            streamingFrameCount = checked((int)streamedRestored.Sum(segment => segment.FrameCount));
+            RefreshStreamingVisuals();
+            return;
+        }
         if (!undoHistory.TryPop(out var restored)) return;
         redoHistory.Push(Samples);
         Samples = restored;
@@ -131,6 +380,15 @@ public sealed class AudioDocument
 
     public void Redo()
     {
+        if (IsStreaming)
+        {
+            if (!streamingRedoHistory.TryPop(out var streamedRestored)) return;
+            streamingUndoHistory.Push(streamingSegments!.ToList());
+            streamingSegments = streamedRestored;
+            streamingFrameCount = checked((int)streamedRestored.Sum(segment => segment.FrameCount));
+            RefreshStreamingVisuals();
+            return;
+        }
         if (!redoHistory.TryPop(out var restored)) return;
         undoHistory.Push(Samples);
         Samples = restored;
@@ -166,6 +424,31 @@ public sealed class AudioDocument
     {
         var frames = selection ?? new Selection(0, FrameCount);
         if (frames.Length == 0) return;
+        if (IsStreaming)
+        {
+            var edited = new List<AudioSourceSegment>();
+            var timeline = 0L;
+            foreach (var segment in streamingSegments!)
+            {
+                var segmentEnd = timeline + segment.FrameCount;
+                var overlapStart = Math.Clamp(frames.StartSample, timeline, segmentEnd);
+                var overlapEnd = Math.Clamp(frames.EndSample, timeline, segmentEnd);
+                if (overlapStart > timeline) edited.Add(segment.Slice(0, overlapStart - timeline));
+                if (overlapEnd > overlapStart)
+                {
+                    var slice = segment.Slice(overlapStart - timeline, overlapEnd - overlapStart);
+                    var startProgress = (overlapStart - frames.StartSample) / (float)Math.Max(1, frames.Length - 1);
+                    var endProgress = (overlapEnd - frames.StartSample - 1) / (float)Math.Max(1, frames.Length - 1);
+                    var fadeStart = fadeOut ? 1f - startProgress : startProgress;
+                    var fadeEnd = fadeOut ? 1f - endProgress : endProgress;
+                    edited.Add(slice with { GainAtStart = slice.GainAtStart * fadeStart, GainAtEnd = slice.GainAtEnd * fadeEnd });
+                }
+                if (overlapEnd < segmentEnd) edited.Add(segment.Slice(overlapEnd - timeline, segmentEnd - overlapEnd));
+                timeline = segmentEnd;
+            }
+            ApplyStreamingEdit(edited);
+            return;
+        }
         SaveUndo();
         for (var frame = frames.StartSample; frame < frames.EndSample; frame++)
         {
@@ -185,6 +468,11 @@ public sealed class AudioDocument
 
     public void SaveAsWave(string path, int bitsPerSample)
     {
+        if (IsStreaming)
+        {
+            SaveStreamingWave(path, 0, FrameCount, bitsPerSample);
+            return;
+        }
         var tempPath = path + ".tmp";
         try
         {
@@ -205,6 +493,11 @@ public sealed class AudioDocument
     public void SaveRangeAsWave(string path, int startFrame, int frameCount, int bitsPerSample)
     {
         ValidateRange(startFrame, frameCount);
+        if (IsStreaming)
+        {
+            SaveStreamingWave(path, startFrame, frameCount, bitsPerSample);
+            return;
+        }
         var offset = startFrame * Channels;
         var count = frameCount * Channels;
         var tempPath = path + ".tmp";
@@ -227,6 +520,11 @@ public sealed class AudioDocument
     public void SaveAsMp3(string path, int bitRate = 192)
     {
         ValidateBitRate(bitRate);
+        if (IsStreaming)
+        {
+            SaveStreamingMp3(path, 0, FrameCount, bitRate);
+            return;
+        }
         var tempPath = path + ".tmp";
         try
         {
@@ -248,6 +546,11 @@ public sealed class AudioDocument
     {
         ValidateRange(startFrame, frameCount);
         ValidateBitRate(bitRate);
+        if (IsStreaming)
+        {
+            SaveStreamingMp3(path, startFrame, frameCount, bitRate);
+            return;
+        }
         var offset = startFrame * Channels;
         var count = frameCount * Channels;
         var tempPath = path + ".tmp";
@@ -266,6 +569,24 @@ public sealed class AudioDocument
         }
     }
 
+    public void SaveAsFlac(string path, double compressionLevel = .5) =>
+        SaveAsSoundFile(path, 0, FrameCount, SoundFileMajorFormat.Flac, new SoundFileWriterOptions { CompressionLevel = compressionLevel });
+
+    public void SaveRangeAsFlac(string path, int startFrame, int frameCount, double compressionLevel = .5) =>
+        SaveAsSoundFile(path, startFrame, frameCount, SoundFileMajorFormat.Flac, new SoundFileWriterOptions { CompressionLevel = compressionLevel });
+
+    public void SaveAsOgg(string path, double quality = .6) =>
+        SaveAsSoundFile(path, 0, FrameCount, SoundFileMajorFormat.OggVorbis, new SoundFileWriterOptions { VbrQuality = quality });
+
+    public void SaveRangeAsOgg(string path, int startFrame, int frameCount, double quality = .6) =>
+        SaveAsSoundFile(path, startFrame, frameCount, SoundFileMajorFormat.OggVorbis, new SoundFileWriterOptions { VbrQuality = quality });
+
+    public void SaveAsOpus(string path, double quality = .6) =>
+        SaveAsSoundFile(path, 0, FrameCount, SoundFileMajorFormat.Opus, new SoundFileWriterOptions { VbrQuality = quality });
+
+    public void SaveRangeAsOpus(string path, int startFrame, int frameCount, double quality = .6) =>
+        SaveAsSoundFile(path, startFrame, frameCount, SoundFileMajorFormat.Opus, new SoundFileWriterOptions { VbrQuality = quality });
+
     private WaveFormat CreateWaveFormat(int bitsPerSample) => bitsPerSample switch
     {
         32 => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
@@ -273,6 +594,82 @@ public sealed class AudioDocument
         16 => new WaveFormat(SampleRate, 16, Channels),
         _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, "Unterstützt werden 16, 24 und 32 Bit.")
     };
+
+    private void SaveAsSoundFile(string path, int startFrame, int frameCount, SoundFileMajorFormat format, SoundFileWriterOptions options)
+    {
+        ValidateRange(startFrame, frameCount);
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new SoundFileWriter(tempPath, WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels), format, options))
+            {
+                if (IsStreaming)
+                    RenderStreaming(startFrame, frameCount, (buffer, sampleCount) => writer.WriteSamples(buffer.AsSpan(0, sampleCount)));
+                else
+                    writer.WriteSamples(Samples.AsSpan(startFrame * Channels, frameCount * Channels));
+            }
+            CommitTempFile(tempPath, path);
+        }
+        catch
+        {
+            DeleteTempFile(tempPath);
+            throw;
+        }
+    }
+
+    private void SaveStreamingWave(string path, int startFrame, int frameCount, int bitsPerSample)
+    {
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
+            {
+                RenderStreaming(startFrame, frameCount, (buffer, sampleCount) => WriteSamples(writer, buffer, 0, sampleCount, bitsPerSample));
+            }
+            CommitTempFile(tempPath, path);
+        }
+        catch
+        {
+            DeleteTempFile(tempPath);
+            throw;
+        }
+    }
+
+    private void SaveStreamingMp3(string path, int startFrame, int frameCount, int bitRate)
+    {
+        var tempPath = path + ".tmp";
+        try
+        {
+            using (var writer = new LameMP3FileWriter(tempPath, new WaveFormat(SampleRate, 16, Channels), bitRate))
+            {
+                RenderStreaming(startFrame, frameCount, (buffer, sampleCount) => WritePcm16(writer, buffer, 0, sampleCount));
+            }
+            CommitTempFile(tempPath, path);
+        }
+        catch
+        {
+            DeleteTempFile(tempPath);
+            throw;
+        }
+    }
+
+    private void RenderStreaming(int startFrame, int frameCount, Action<float[], int> writeBlock)
+    {
+        using var source = CreateSegmentedSource();
+        const int blockFrames = 4096;
+        var buffer = new float[blockFrames * Channels];
+        var position = startFrame;
+        var remaining = frameCount;
+        while (remaining > 0)
+        {
+            var requested = Math.Min(blockFrames, remaining);
+            var read = source.ReadFrames(position, buffer, 0, requested);
+            if (read != requested) throw new EndOfStreamException("Die gestreamte Quelle endete beim Export vorzeitig.");
+            writeBlock(buffer, read * Channels);
+            position += read;
+            remaining -= read;
+        }
+    }
 
     private void ValidateRange(int startFrame, int frameCount)
     {
@@ -341,6 +738,19 @@ public sealed class AudioDocument
     /// <summary>Setzt nach „Speichern unter“ den neuen Quelldateipfad und markiert das Dokument als gespeichert.</summary>
     public void UpdateSourcePath(string path)
     {
+        if (IsStreaming && Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase))
+        {
+            // Nach „Speichern unter“ ist die WAV bereits als aktueller Schnittstand
+            // gerendert. Die Segmentliste kann deshalb wieder auf diese neue Datei
+            // zeigen, statt weiter von der alten Quelldatei abzuhängen.
+            streamingWavPath = path;
+            streamingSegments = streamingFrameCount == 0
+                ? []
+                : [new AudioSourceSegment(0, streamingFrameCount)];
+            streamingUndoHistory.Clear();
+            streamingRedoHistory.Clear();
+            RefreshStreamingVisuals();
+        }
         SourcePath = path;
         DisplayName = Path.GetFileName(path);
         IsModified = false;
@@ -352,12 +762,19 @@ public sealed class AudioDocument
     private void SaveUndo()
     {
         IsModified = true;
+        InvalidateSpectrogram();
         undoHistory.Push((float[])Samples.Clone());
         redoHistory.Clear();
         if (undoHistory.Count <= MaxUndoSteps) return;
         var retained = undoHistory.Take(MaxUndoSteps).Reverse().ToArray();
         undoHistory.Clear();
         foreach (var state in retained) undoHistory.Push(state);
+    }
+
+    private void InvalidateSpectrogram()
+    {
+        spectrogramCancellation?.Cancel();
+        Spectrogram = null;
     }
 }
 
@@ -404,16 +821,18 @@ internal sealed class ArraySampleProvider : ISampleProvider
     }
 }
 
-internal sealed class ArrayWaveProvider : IWaveProvider
+internal sealed class ArrayWaveProvider : IRewindableWaveProvider
 {
     private readonly float[] data;
+    private readonly int startBytePosition;
     private readonly int endBytePosition;
     private int bytePosition;
 
     public ArrayWaveProvider(float[] data, int sampleOffset, int sampleCount, WaveFormat waveFormat)
     {
         this.data = data;
-        bytePosition = sampleOffset * sizeof(float);
+        startBytePosition = sampleOffset * sizeof(float);
+        bytePosition = startBytePosition;
         endBytePosition = bytePosition + sampleCount * sizeof(float);
         WaveFormat = waveFormat;
     }
@@ -435,4 +854,6 @@ internal sealed class ArrayWaveProvider : IWaveProvider
         bytePosition += available;
         return available;
     }
+
+    public void Rewind() => bytePosition = startBytePosition;
 }

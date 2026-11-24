@@ -1,5 +1,6 @@
 ﻿using Microsoft.Win32;
 using NAudio.CoreAudioApi;
+using NAudio.Vst3;
 using NAudio.Wave;
 using System.Diagnostics;
 using System.IO;
@@ -19,22 +20,37 @@ public partial class MainWindow : Window
     private bool isRefreshingFileList;
     private bool isActivatingDocument;
     private IWavePlayer? player;
+    private IDisposable? playbackProvider;
+    private MeteringWaveProvider? playbackMeter;
+    private AudioDocument? playbackDocument;
+    private AudioDocument? multitrackPlaybackDocument;
+    private MultitrackWaveProvider? multitrackMixer;
     private IWavePlayer? previewPlayer;
     private bool isPlaying;
-    private readonly DispatcherTimer playbackTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
+    // Render-Priorität verhindert, dass Cursor und Meter bei einer großen
+    // Wellenform erst nach weniger wichtigen UI-Aufgaben aktualisiert werden.
+    private readonly DispatcherTimer playbackTimer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Stopwatch playbackClock = new();
-    private int playbackStartFrame;
-    private int playbackFrameCount;
-    private int lastMeterFrame;
+    private long playbackStartFrame;
+    private long playbackFrameCount;
+    private long lastMeterFrame;
     // Puffergröße des WasapiOut: Anzeige und Cursor werden um diese Latenz
     // gegen das tatsächlich hörbare Signal zurückgerechnet.
-    private const int OutputLatencyMs = 100;
+    private const int OutputLatencyMs = 50;
     private bool loopSelection;
-    private int loopStartFrame;
-    private int loopFrameCount;
+    private bool loopPlaybackEnabled;
+    private long loopStartFrame;
+    private long loopFrameCount;
     private readonly RecordingEngine recorder = new();
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
     private bool isScanningVst;
+    private readonly MultitrackProject multitrack = new();
+    private MultitrackTrack? selectedTrack;
+    private AudioDocument? dragSourceDocument;
+    private Point dragStartPoint;
+    private bool isDocumentDragging;
+    private bool preparingMultitrack;
+    private int playbackPreparationVersion;
 
     private enum SavePromptResult { Save, Discard, Cancel }
 
@@ -54,6 +70,38 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        PreviewMouseMove += FileList_PreviewMouseMove;
+        PreviewMouseLeftButtonUp += DocumentDrag_MouseUp;
+        Sequencer.TrackSelected += track => selectedTrack = track;
+        Sequencer.EffectsRequested += track =>
+        {
+            var dialog = new TrackEffectsWindow(this, track,
+                () => { multitrackMixer?.UpdateTrackEffects(track); Sequencer.SetProject(multitrack); },
+                () => { if (!isPlaying) PlayMultitrack_Click(this, new RoutedEventArgs()); },
+                StopPlayback);
+            dialog.ShowDialog();
+            Sequencer.SetProject(multitrack);
+        };
+        Sequencer.PlaybackRangeChanged += () =>
+        {
+            HintText.Content = Sequencer.GetPlaybackRange() is null ? "Mehrspur-Auswahl aufgehoben." : "Mehrspur-Auswahl gesetzt. ⟳ wiederholt den Bereich.";
+            UpdateMultitrackPlaybackRange();
+            UpdateSelectionText();
+        };
+        Sequencer.RemoveTrackRequested += track =>
+        {
+            StopPlayback();
+            multitrack.Remove(track);
+            selectedTrack = multitrack.Tracks.FirstOrDefault();
+            RefreshMultitrack();
+        };
+        Sequencer.ProjectChanged += () =>
+        {
+            BpmText.Text = multitrack.Bpm.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture);
+            MultitrackInfo.Text = $"{multitrack.Tracks.Count} Spuren · {multitrack.Bpm:0.##} BPM";
+            UpdateSelectionText();
+            HintText.Content = "Clip im Beat-Raster platziert. Projekt abspielen startet alle Spuren.";
+        };
         AllowDrop = true;
         DragOver += (_, e) => e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenAudio(files[0]); };
@@ -73,14 +121,227 @@ public partial class MainWindow : Window
         {
             var startupFile = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
             if (startupFile is not null) OpenAudio(startupFile);
-            ScanVstEffects();
+            // Scan-Dialog nur noch auf Bedarf über den Menüpunkt/„VST3 scannen"-Knopf öffnen.
+            // Gespeicherte VST3-Plugins sofort in die Liste laden (kein Neuscan nötig).
+            var cached = Vst3EffectCatalog.LoadCache();
+            if (cached.Count > 0)
+            {
+                vstEffects = cached;
+                ReplaceItemsSource(VstEffectsList, cached);
+                HintText.Content = $"{cached.Count} gespeicherte VST3-Effekte geladen. Doppelklick wendet ein Plugin an.";
+            }
         };
     }
 
+    private void SequencerHorizontalIn_Click(object sender, RoutedEventArgs e) => Sequencer.ZoomHorizontal(1.25);
+    private void SequencerHorizontalOut_Click(object sender, RoutedEventArgs e) => Sequencer.ZoomHorizontal(1 / 1.25);
+    private void SequencerVerticalIn_Click(object sender, RoutedEventArgs e) => Sequencer.ZoomVertical(1.25);
+    private void SequencerVerticalOut_Click(object sender, RoutedEventArgs e) => Sequencer.ZoomVertical(1 / 1.25);
+
     private void Open_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new OpenFileDialog { Filter = "Audiodateien|*.wav;*.mp3;*.m4a;*.aac;*.wma;*.flac|Alle Dateien|*.*" };
+        var dialog = new OpenFileDialog { Filter = "Audiodateien|*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.wma|Alle Dateien|*.*" };
         if (dialog.ShowDialog(this) == true) OpenAudio(dialog.FileName);
+    }
+
+    private void EditView_Click(object sender, RoutedEventArgs e)
+    {
+        EditorPanel.Visibility = Visibility.Visible;
+        MultitrackPanel.Visibility = Visibility.Collapsed;
+        EditViewButton.Style = (Style)FindResource("ViewTabActiveButton");
+        MultitrackViewButton.Style = (Style)FindResource("TabSelectButton");
+        UpdateSelectionText();
+    }
+
+    private void MultitrackView_Click(object sender, RoutedEventArgs e)
+    {
+        StopPlayback();
+        EditorPanel.Visibility = Visibility.Collapsed;
+        MultitrackPanel.Visibility = Visibility.Visible;
+        EditViewButton.Style = (Style)FindResource("TabSelectButton");
+        MultitrackViewButton.Style = (Style)FindResource("ViewTabActiveButton");
+        RefreshMultitrack();
+    }
+
+    private void FileList_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var item = FindAncestor<ListBoxItem>(e.OriginalSource as DependencyObject);
+        var index = item is null ? -1 : FileList.ItemContainerGenerator.IndexFromContainer(item);
+        dragSourceDocument = index >= 0 && index < openDocuments.Count ? openDocuments[index] : null;
+        dragStartPoint = e.GetPosition(FileList);
+        if (dragSourceDocument is not null && MultitrackPanel.Visibility == Visibility.Visible)
+        {
+            FileList.SelectedIndex = index;
+            isDocumentDragging = false;
+            System.Windows.Input.Mouse.Capture(this, System.Windows.Input.CaptureMode.SubTree);
+            e.Handled = true;
+        }
+    }
+
+    private void FileList_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
+    {
+        if (dragSourceDocument is null || e.LeftButton != System.Windows.Input.MouseButtonState.Pressed) return;
+        var distance = e.GetPosition(FileList) - dragStartPoint;
+        if (Math.Abs(distance.X) < SystemParameters.MinimumHorizontalDragDistance && Math.Abs(distance.Y) < SystemParameters.MinimumVerticalDragDistance) return;
+        if (MultitrackPanel.Visibility != Visibility.Visible) return;
+        isDocumentDragging = true;
+        Cursor = System.Windows.Input.Cursors.Hand;
+        HintText.Content = $"'{dragSourceDocument.DisplayName}' rechts ablegen – neue Spur oder weiterer Clip.";
+    }
+
+    private void DocumentDrag_MouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var source = dragSourceDocument;
+        var dragging = isDocumentDragging;
+        dragSourceDocument = null;
+        isDocumentDragging = false;
+        Cursor = null;
+        if (System.Windows.Input.Mouse.Captured == this) System.Windows.Input.Mouse.Capture(null);
+        if (!dragging || source is null) return;
+        var point = e.GetPosition(Sequencer);
+        if (point.X >= 0 && point.Y >= 0 && point.X < Sequencer.ActualWidth && point.Y < Sequencer.ActualHeight)
+        {
+            Sequencer.PlaceDocument(source, point);
+            e.Handled = true;
+        }
+    }
+
+    private void AddTrack_Click(object sender, RoutedEventArgs e)
+    {
+        selectedTrack = multitrack.AddEmptyTrack();
+        RefreshMultitrack();
+        HintText.Content = "Neue leere Spur angelegt. Benennen und dann eine Datei links auf die Spur ziehen.";
+    }
+
+    private void ApplyBpm_Click(object sender, RoutedEventArgs e)
+    {
+        if (!double.TryParse(BpmText.Text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out var bpm))
+        { HintText.Content = "Bitte BPM als Zahl eingeben, z. B. 120."; return; }
+        try
+        {
+            if (Math.Abs(multitrack.Bpm - bpm) < 0.0001) return;
+            StopPlayback();
+            multitrack.SetBpm(bpm);
+            BpmText.Text = multitrack.Bpm.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture);
+            RefreshMultitrack();
+            HintText.Content = $"Raster auf {multitrack.Bpm:0.##} BPM gesetzt. Clips rasten beim Ablegen auf volle Beats ein.";
+        }
+        catch (ArgumentOutOfRangeException) { HintText.Content = "BPM muss zwischen 30 und 300 liegen."; }
+    }
+
+    private void Bpm_LostFocus(object sender, RoutedEventArgs e) => ApplyBpm_Click(sender, e);
+
+    private void TrackLane_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent("WaveBench.AudioDocument") ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void TrackLane_Drop(object sender, DragEventArgs e)
+    {
+        if (sender is not Canvas lane || lane.DataContext is not MultitrackTrack track || e.Data.GetData("WaveBench.AudioDocument") is not AudioDocument source) return;
+        const double pixelsPerBeat = 80;
+        var beat = Math.Round(Math.Max(0, e.GetPosition(lane).X / pixelsPerBeat));
+        multitrack.PutClipOnBeat(track, source, beat);
+        selectedTrack = track;
+        RefreshMultitrack();
+        HintText.Content = $"'{source.DisplayName}' auf '{track.Name}' ab Beat {beat + 1:0} abgelegt.";
+        e.Handled = true;
+    }
+
+    private void RemoveTrack_Click(object sender, RoutedEventArgs e)
+    {
+        if (selectedTrack is null) { HintText.Content = "Bitte zuerst eine Spur anklicken."; return; }
+        multitrack.Remove(selectedTrack);
+        selectedTrack = multitrack.Tracks.LastOrDefault();
+        RefreshMultitrack();
+    }
+
+    private void TrackMute_Click(object sender, RoutedEventArgs e) { if (sender is FrameworkElement { DataContext: MultitrackTrack track }) { selectedTrack = track; RefreshMultitrack(); } }
+    private void TrackSolo_Click(object sender, RoutedEventArgs e) { if (sender is FrameworkElement { DataContext: MultitrackTrack track }) { selectedTrack = track; RefreshMultitrack(); } }
+    private void TrackGain_Changed(object sender, RoutedPropertyChangedEventArgs<double> e) { if (sender is FrameworkElement { DataContext: MultitrackTrack track }) { track.Gain = e.NewValue; selectedTrack = track; } }
+    private void TrackPan_Changed(object sender, RoutedPropertyChangedEventArgs<double> e) { if (sender is FrameworkElement { DataContext: MultitrackTrack track }) { track.Pan = e.NewValue; selectedTrack = track; } }
+    private void Track_Selected(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (sender is FrameworkElement { DataContext: MultitrackTrack track })
+        {
+            selectedTrack = track;
+            HintText.Content = $"Spur ausgewählt: {track.Name}";
+        }
+    }
+
+    private void Mixdown_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            StopPlayback();
+            var mix = AudioDocument.FromSamples(multitrack.RenderMixdown(), 2, multitrack.SampleRate, "Mixdown.wav");
+            openDocuments.Add(mix);
+            ActivateDocument(mix);
+            EditView_Click(sender, e);
+            HintText.Content = "Mixdown erstellt – die Originalspuren bleiben unverändert.";
+        }
+        catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void PlayMultitrack_Click(object sender, RoutedEventArgs e)
+    {
+        if (preparingMultitrack) return;
+        if (isPlaying) { StopPlayback(); return; }
+        try
+        {
+            preparingMultitrack = true;
+            Sequencer.IsEnabled = false;
+            FileList.IsEnabled = false;
+            BpmText.IsEnabled = false;
+            var version = ++playbackPreparationVersion;
+            HintText.Content = "Mehrspur-Wiedergabe wird vorbereitet…";
+            var provider = await Task.Run(() => new MultitrackWaveProvider(multitrack));
+            if (version != playbackPreparationVersion) return;
+            var range = Sequencer.GetPlaybackRange();
+            var start = range?.Start ?? 0;
+            if (start >= provider.FrameCount) throw new InvalidOperationException("Die Auswahl liegt hinter dem letzten Sample. Bitte einen Bereich mit Audio markieren.");
+            var count = range?.Count ?? provider.FrameCount;
+            provider.ConfigurePlayback(start, count, loopPlaybackEnabled);
+            multitrackMixer = provider;
+            multitrackPlaybackDocument = AudioDocument.FromSamples(new float[2], 2, multitrack.SampleRate);
+            loopSelection = false; // Multitrack mixer wraps internally and accepts live range updates.
+            StartPlayback(start, count, multitrackPlaybackDocument, provider);
+            HintText.Content = loopPlaybackEnabled ? "Mehrspur-Schleife läuft." : "Mehrspurprojekt wird gemeinsam wiedergegeben.";
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(this, $"Mehrspur-Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally { preparingMultitrack = false; Sequencer.IsEnabled = true; FileList.IsEnabled = true; BpmText.IsEnabled = true; }
+    }
+
+    private void UpdateMultitrackPlaybackRange()
+    {
+        if (multitrackMixer is not { } mixer) return;
+        var range = Sequencer.GetPlaybackRange();
+        var start = range?.Start ?? 0;
+        var count = range?.Count ?? mixer.FrameCount;
+        mixer.ConfigurePlayback(start, count, loopPlaybackEnabled);
+    }
+
+    private void RefreshMultitrack()
+    {
+        Sequencer.SetProject(multitrack);
+        MultitrackInfo.Text = multitrack.Tracks.Count == 0
+            ? "Noch keine Spuren"
+            : $"{multitrack.Tracks.Count} Spur(en) · {multitrack.Bpm:0.##} BPM · {multitrack.SampleRate:N0} Hz";
+        UpdateSelectionText();
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T match) return match;
+            current = VisualTreeHelper.GetParent(current);
+        }
+        return null;
     }
 
     private void OpenAudio(string fileName)
@@ -111,7 +372,17 @@ public partial class MainWindow : Window
         isActivatingDocument = true;
         StopPlayback();
         document = documentToActivate;
-        Waveform.SetAudio(documentToActivate.Samples, documentToActivate.Channels, documentToActivate.SampleRate);
+        documentToActivate.PeakCacheReady -= Document_PeakCacheReady;
+        documentToActivate.PeakCacheReady += Document_PeakCacheReady;
+        documentToActivate.SpectrogramReady -= Document_SpectrogramReady;
+        documentToActivate.SpectrogramReady += Document_SpectrogramReady;
+        if (documentToActivate.IsStreaming)
+            Waveform.SetStreamingPreview(documentToActivate.WaveformSamples, documentToActivate.Channels, documentToActivate.SampleRate, documentToActivate.FrameCount);
+        else
+            Waveform.SetAudio(documentToActivate.Samples, documentToActivate.Channels, documentToActivate.SampleRate);
+        Waveform.SetPeakCache(documentToActivate.PeakCache);
+        Waveform.SetSpectrogram(documentToActivate.Spectrogram);
+        if (SpectrogramMenuItem.IsChecked) documentToActivate.RequestSpectrogram();
         RefreshDocumentTabs();
         RefreshDocumentInfo();
         RefreshFileList();
@@ -180,6 +451,9 @@ public partial class MainWindow : Window
         newDocument.MarkModified();
         openDocuments.Add(newDocument);
         ActivateDocument(newDocument);
+        loopPlaybackEnabled = true;
+        LoopButton.IsChecked = true;
+        HintText.Content = "Neue Datei aus Auswahl – Endlosschleife ist aktiv.";
         HintText.Content = $"{newDocument.DisplayName} aus Auswahl erstellt: {selection.Length:N0} Samples.";
     }
 
@@ -280,6 +554,7 @@ public partial class MainWindow : Window
         if (index < 0) return true;
         StopPlayback();
         openDocuments.RemoveAt(index);
+        documentToClose.Dispose();
         if (openDocuments.Count == 0)
         {
             document = null;
@@ -287,7 +562,7 @@ public partial class MainWindow : Window
             RefreshDocumentTabs();
             StartText.Content = "Start: —";
             EndText.Content = "Ende: —";
-            SelectionText.Content = "Auswahl: —";
+            SelectionText.Content = "Dauer: —";
             SampleText.Content = "Samples: —";
             RefreshDocumentInfo();
             RefreshFileList();
@@ -299,6 +574,24 @@ public partial class MainWindow : Window
             ActivateDocument(openDocuments[nextIndex]);
         }
         return true;
+    }
+
+    private void Document_PeakCacheReady(object? sender, EventArgs e)
+    {
+        if (sender is not AudioDocument source) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (ReferenceEquals(document, source)) Waveform.SetPeakCache(source.PeakCache);
+        }));
+    }
+
+    private void Document_SpectrogramReady(object? sender, EventArgs e)
+    {
+        if (sender is not AudioDocument source) return;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (ReferenceEquals(document, source)) Waveform.SetSpectrogram(source.Spectrogram);
+        }));
     }
 
     private void Save_Click(object sender, RoutedEventArgs e) => SaveCurrent();
@@ -340,19 +633,21 @@ public partial class MainWindow : Window
             HintText.Content = "Keine Datei geladen.";
             return false;
         }
-        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav|MP3 192 kBit/s|*.mp3|MP3 320 kBit/s|*.mp3", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.DisplayName)}_bearbeitet.wav" };
+        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav|MP3 192 kBit/s|*.mp3|MP3 320 kBit/s|*.mp3|FLAC|*.flac|OGG Vorbis|*.ogg|Opus|*.opus", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.DisplayName)}_bearbeitet.wav" };
         if (dialog.ShowDialog(this) != true) return false;
         try
         {
-            if (dialog.FilterIndex >= 4)
+            switch (dialog.FilterIndex)
             {
-                var bitRate = dialog.FilterIndex == 5 ? 320 : 192;
-                document.SaveAsMp3(dialog.FileName, bitRate);
-            }
-            else
-            {
-                var bits = dialog.FilterIndex switch { 1 => 16, 3 => 32, _ => 24 };
-                document.SaveAsWave(dialog.FileName, bits);
+                case 4: document.SaveAsMp3(dialog.FileName, 192); break;
+                case 5: document.SaveAsMp3(dialog.FileName, 320); break;
+                case 6: document.SaveAsFlac(dialog.FileName); break;
+                case 7: document.SaveAsOgg(dialog.FileName); break;
+                case 8: document.SaveAsOpus(dialog.FileName); break;
+                default:
+                    var bits = dialog.FilterIndex switch { 1 => 16, 3 => 32, _ => 24 };
+                    document.SaveAsWave(dialog.FileName, bits);
+                    break;
             }
             document.UpdateSourcePath(dialog.FileName);
             document.MarkSaved();
@@ -382,19 +677,28 @@ public partial class MainWindow : Window
         try
         {
             StopPlayback();
-            if (dialog.IsMp3)
+            switch (dialog.Format)
             {
-                if (dialog.ExportSelection)
-                    document.SaveRangeAsMp3(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitRate);
-                else
-                    document.SaveAsMp3(dialog.TargetPath, dialog.BitRate);
-            }
-            else
-            {
-                if (dialog.ExportSelection)
-                    document.SaveRangeAsWave(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitsPerSample);
-                else
-                    document.SaveAsWave(dialog.TargetPath, dialog.BitsPerSample);
+                case ExportFormat.Mp3:
+                    if (dialog.ExportSelection) document.SaveRangeAsMp3(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitRate);
+                    else document.SaveAsMp3(dialog.TargetPath, dialog.BitRate);
+                    break;
+                case ExportFormat.Flac:
+                    if (dialog.ExportSelection) document.SaveRangeAsFlac(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length);
+                    else document.SaveAsFlac(dialog.TargetPath);
+                    break;
+                case ExportFormat.Ogg:
+                    if (dialog.ExportSelection) document.SaveRangeAsOgg(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
+                    else document.SaveAsOgg(dialog.TargetPath, dialog.VbrQuality);
+                    break;
+                case ExportFormat.Opus:
+                    if (dialog.ExportSelection) document.SaveRangeAsOpus(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
+                    else document.SaveAsOpus(dialog.TargetPath, dialog.VbrQuality);
+                    break;
+                default:
+                    if (dialog.ExportSelection) document.SaveRangeAsWave(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitsPerSample);
+                    else document.SaveAsWave(dialog.TargetPath, dialog.BitsPerSample);
+                    break;
             }
             HintText.Content = $"Exportiert: {Path.GetFileName(dialog.TargetPath)}";
         }
@@ -407,17 +711,20 @@ public partial class MainWindow : Window
 
     private void Play_Click(object sender, RoutedEventArgs e)
     {
+        if (MultitrackPanel.Visibility == Visibility.Visible) { PlayMultitrack_Click(sender, e); return; }
         if (document is null) return;
         if (isPlaying) { StopPlayback(); return; }
         var selection = Waveform.GetSelection(); var start = selection?.StartSample ?? Waveform.CursorSample; var count = selection?.Length ?? document.FrameCount - start;
         if (count <= 0) return;
-        loopSelection = selection.HasValue;
+        loopSelection = selection.HasValue || loopPlaybackEnabled;
         loopStartFrame = start;
         loopFrameCount = count;
         try
         {
             StartPlayback(start, count);
-            HintText.Content = selection.HasValue ? "Schleifenwiedergabe der Auswahl." : "Wiedergabe ab Cursorposition.";
+            HintText.Content = loopSelection
+                ? (selection.HasValue ? "Schleifenwiedergabe der Auswahl." : "Endlosschleife aktiv – Stopp beendet die Wiedergabe.")
+                : "Wiedergabe ab Cursorposition.";
         }
         catch (Exception exception) { StopPlayback(); MessageBox.Show(this, $"Die Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
@@ -440,26 +747,39 @@ public partial class MainWindow : Window
                 StopPlayback();
                 HintText.Content = $"Wiedergabefehler: {e.Exception.Message}";
             }
-            else if (loopSelection && isPlaying && document is not null)
-            {
-                StartPlayback(loopStartFrame, loopFrameCount);
-                HintText.Content = "Schleifenwiedergabe der Auswahl.";
-            }
             else
             {
+                // Der Anzeige-Cursor läuft bewusst um die WASAPI-Pufferlatenz hinter
+                // der Stoppuhr. PlaybackStopped trifft daher ein, bevor der letzte
+                // Timer-Tick die Endposition erreichen kann. Am natürlichen Ende
+                // wird die Position explizit vervollständigt.
+                var finalFrame = playbackStartFrame + playbackFrameCount;
+                if (ReferenceEquals(playbackDocument, document))
+                    Waveform.SetCursor((int)Math.Clamp(finalFrame, 0, document?.FrameCount ?? 0), notifySelectionChanged: false);
                 StopPlayback();
                 HintText.Content = "Wiedergabe beendet.";
             }
         });
     }
     private void Stop_Click(object sender, RoutedEventArgs e) => StopPlayback();
+    private void LoopToggle_Click(object sender, RoutedEventArgs e)
+    {
+        loopPlaybackEnabled = LoopButton.IsChecked == true;
+        UpdateMultitrackPlaybackRange();
+        HintText.Content = loopPlaybackEnabled ? "Endlosschleife aktiviert." : "Endlosschleife deaktiviert.";
+    }
     private void StopPlayback()
     {
+        playbackPreparationVersion++;
         StopPreview();
         loopSelection = false;
         isPlaying = false;
         playbackClock.Stop(); playbackTimer.Stop();
         DisposePlayer();
+        playbackDocument = null;
+        multitrackPlaybackDocument = null;
+        multitrackMixer = null;
+        Sequencer.PositionSeconds = 0;
         if (!recorder.IsRecording) ResetLevel();
     }
 
@@ -524,22 +844,43 @@ public partial class MainWindow : Window
 
     private void Recorder_LevelChanged(object? sender, float[] peaks) => Dispatcher.BeginInvoke(new Action(() => SetLevels(peaks)));
 
-    private void SetLevels(float[] peaks) => StereoMeter.SetLevels(peaks);
+    private void SetLevels(IReadOnlyList<float> peaks, IReadOnlyList<float>? rms = null, bool clipped = false) => StereoMeter.SetLevels(peaks, rms, clipped);
 
     private void ResetLevel() => StereoMeter.Reset();
 
     private void MeterToggle_Click(object sender, RoutedEventArgs e) =>
         MeterPanel.Visibility = MeterMenuItem.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
 
-    private void StartPlayback(int start, int count)
+    private void SpectrogramToggle_Click(object sender, RoutedEventArgs e)
     {
+        var enabled = SpectrogramMenuItem.IsChecked == true;
+        Waveform.SetSpectrogramMode(enabled);
+        if (enabled && document is not null)
+        {
+            document.RequestSpectrogram();
+            HintText.Content = "Spektrogramm wird berechnet…";
+        }
+    }
+
+    private void StartPlayback(long start, long count, AudioDocument? sourceDocument = null, IWaveProvider? preparedProvider = null)
+    {
+        var targetDocument = sourceDocument ?? document ?? throw new InvalidOperationException("Keine Audiodatei geöffnet.");
         DisposePlayer();
+        playbackDocument = targetDocument;
         playbackStartFrame = start;
         playbackFrameCount = count;
         lastMeterFrame = start;
-        Waveform.SetCursor(start);
+        if (ReferenceEquals(targetDocument, document))
+            Waveform.SetCursor((int)Math.Clamp(start, 0, targetDocument.FrameCount), notifySelectionChanged: false);
         player = CreatePlayer();
-        player.Init(document!.CreateWaveProvider(start, count));
+        var sourceProvider = preparedProvider ?? targetDocument.CreateWaveProvider((int)Math.Clamp(start, 0, targetDocument.FrameCount), (int)Math.Clamp(count, 0, targetDocument.FrameCount - Math.Clamp(start, 0, targetDocument.FrameCount)));
+        var provider = loopSelection && sourceProvider is IRewindableWaveProvider rewindable
+            ? new LoopingWaveProvider(rewindable)
+            : sourceProvider;
+        var meteredProvider = new MeteringWaveProvider(provider);
+        playbackMeter = meteredProvider;
+        playbackProvider = meteredProvider;
+        player.Init(meteredProvider);
         player.PlaybackStopped += Player_PlaybackStopped;
         playbackClock.Restart();
         player.Play();
@@ -551,8 +892,15 @@ public partial class MainWindow : Window
     {
         var oldPlayer = player;
         player = null;
-        if (oldPlayer is null) return;
-        oldPlayer.PlaybackStopped -= Player_PlaybackStopped; oldPlayer.Stop(); oldPlayer.Dispose();
+        if (oldPlayer is not null)
+        {
+            oldPlayer.PlaybackStopped -= Player_PlaybackStopped;
+            oldPlayer.Stop();
+            oldPlayer.Dispose();
+        }
+        playbackProvider?.Dispose();
+        playbackProvider = null;
+        playbackMeter = null;
     }
 
     private void StopPreview()
@@ -566,27 +914,22 @@ public partial class MainWindow : Window
 
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
     {
-        if (document is null || !isPlaying) return;
+        if (playbackDocument is null || !isPlaying) return;
         // Die hörbare Position liegt um die Ausgangspuffer-Latenz hinter der Wanduhr.
         var elapsed = Math.Max(0d, playbackClock.Elapsed.TotalSeconds - OutputLatencyMs / 1000d);
-        var playedFrames = (int)(elapsed * document.SampleRate);
-        var frame = Math.Min(playbackStartFrame + playedFrames, playbackStartFrame + playbackFrameCount);
-        Waveform.SetCursor(frame);
+        var playedFrames = (long)(elapsed * playbackDocument.SampleRate);
+        var frame = multitrackMixer is { } mixer
+            ? mixer.AudibleFrame(mixer.WaveFormat.SampleRate * OutputLatencyMs / 1000)
+            : loopSelection && playbackFrameCount > 0
+            ? playbackStartFrame + playedFrames % playbackFrameCount
+            : Math.Min(playbackStartFrame + playedFrames, playbackStartFrame + playbackFrameCount);
+        if (ReferenceEquals(playbackDocument, multitrackPlaybackDocument)) Sequencer.PositionSeconds = frame / (double)playbackDocument.SampleRate;
+        if (ReferenceEquals(playbackDocument, document))
+            Waveform.SetCursor((int)Math.Clamp(frame, 0, playbackDocument.FrameCount), notifySelectionChanged: false);
 
-        // Peaks aus dem Intervall seit dem letzten Tick: lückenlos, ohne
-        // Vorausschau auf noch nicht gehörte Samples.
-        var channels = document.Channels;
-        var from = Math.Clamp(lastMeterFrame * channels, 0, document.Samples.Length);
-        var to = Math.Clamp(Math.Max(frame, lastMeterFrame) * channels, from, document.Samples.Length);
-        var peaks = new float[channels];
-        for (var index = from; index < to; index++)
-        {
-            var channel = (index - from) % channels;
-            peaks[channel] = Math.Max(peaks[channel], Math.Abs(document.Samples[index]));
-        }
-        lastMeterFrame = Math.Max(lastMeterFrame, frame);
-        SetLevels(peaks);
-        HintText.Content = $"▶ Wiedergabe: {FormatTime(TimeSpan.FromSeconds(frame / (double)document.SampleRate))}";
+        // Diese Werte entstehen im WASAPI-Read, nicht aus der UI-Uhr.
+        SetLevels(playbackMeter?.Peaks ?? Array.Empty<float>(), playbackMeter?.Rms, playbackMeter?.Clipped == true);
+        HintText.Content = $"▶ Wiedergabe: {FormatTime(TimeSpan.FromSeconds(frame / (double)playbackDocument.SampleRate))}";
     }
 
     private void Cut_Click(object sender, RoutedEventArgs e) { CopySelection(); DeleteSelection(); }
@@ -614,10 +957,20 @@ public partial class MainWindow : Window
     private void Undo_Click(object sender, RoutedEventArgs e) { if (document?.CanUndo == true) { StopPlayback(); document.Undo(); RefreshAfterEdit(); } }
     private void Redo_Click(object sender, RoutedEventArgs e) { if (document?.CanRedo == true) { StopPlayback(); document.Redo(); RefreshAfterEdit(); } }
     private void SelectAll_Click(object sender, RoutedEventArgs e) => Waveform.SelectAll();
-    private void ZoomIn_Click(object sender, RoutedEventArgs e) => Waveform.ZoomIn();
-    private void ZoomOut_Click(object sender, RoutedEventArgs e) => Waveform.ZoomOut();
-    private void ZoomVerticalIn_Click(object sender, RoutedEventArgs e) => Waveform.ZoomVerticalIn();
-    private void ZoomVerticalOut_Click(object sender, RoutedEventArgs e) => Waveform.ZoomVerticalOut();
+    private void PreciseSelection_Click(object sender, RoutedEventArgs e)
+    {
+        if (document is null) return;
+        var dialog = new SelectionDialog(this, document.SampleRate, document.FrameCount, Waveform.GetSelection());
+        if (dialog.ShowDialog() != true) return;
+        Waveform.SetSelection(dialog.Result.StartSample, dialog.Result.EndSample);
+        HintText.Content = "Auswahl präzise gesetzt.";
+    }
+    private void ZoomIn_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ZoomHorizontal(1.25); else Waveform.ZoomIn(); }
+    private void ZoomOut_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ZoomHorizontal(1 / 1.25); else Waveform.ZoomOut(); }
+    private void ZoomVerticalIn_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ZoomVertical(1.25); else Waveform.ZoomVerticalIn(); }
+    private void ZoomVerticalOut_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ZoomVertical(1 / 1.25); else Waveform.ZoomVerticalOut(); }
+    private void ResetHorizontalZoom_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ResetHorizontalZoom(); else Waveform.ResetHorizontalZoom(); }
+    private void ResetVerticalZoom_Click(object sender, RoutedEventArgs e) { if (MultitrackPanel.Visibility == Visibility.Visible) Sequencer.ResetVerticalZoom(); else Waveform.ResetVerticalZoom(); }
     private void ShowAll_Click(object sender, RoutedEventArgs e) => Waveform.ShowAll();
 
     private void Normalize_Click(object sender, RoutedEventArgs e) { if (document is not null) ApplyEffect(document.Normalize, "Normalisierung abgeschlossen."); }
@@ -700,9 +1053,14 @@ public partial class MainWindow : Window
             {
                 vstEffects = effects;
                 ReplaceItemsSource(VstEffectsList, effects);
-                HintText.Content = effects.Count == 0
-                    ? "Keine VST3-Effekte gefunden."
-                    : $"{effects.Count} VST3-Effekte gefunden. Doppelklick wendet sie an.";
+                // Übernommene Plugins in die Liste aufnehmen (Cache wurde bereits im Dialog aktualisiert).
+                var merged = Vst3EffectCatalog.LoadCache();
+                if (merged.Count > effects.Count)
+                {
+                    vstEffects = merged;
+                    ReplaceItemsSource(VstEffectsList, merged);
+                }
+                HintText.Content = $"{vstEffects.Count} VST3-Effekte verfügbar. Doppelklick auf ein Plugin wendet es auf die geöffnete Audiodatei an.";
             }
             else
             {
@@ -730,54 +1088,144 @@ public partial class MainWindow : Window
             MessageBox.Show(this, "Bitte zuerst eine Audiodatei öffnen.", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
+        // Pro Aufruf eine frische Instanz – nie dieselbe Vst3PluginView/HwndHost wiederverwenden.
+        RunApplyVstEffect(descriptor);
+    }
+
+    private void RunApplyVstEffect(Vst3EffectDescriptor descriptor)
+    {
         var selection = Waveform.GetSelection();
         var start = selection?.StartSample ?? 0;
-        var frames = selection?.Length ?? document.FrameCount;
+        var frames = selection?.Length ?? document!.FrameCount;
         if (frames <= 0) return;
 
-        var dialog = new VstPluginDialog(this, descriptor);
-        dialog.PreviewRequested += state => PreviewVstEffect(descriptor, state);
+        VstPluginDialog dialog;
+        try
+        {
+            dialog = new VstPluginDialog(this, descriptor, document!.SampleRate);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, BuildFullErrorText($"Das VST3-Plugin '{descriptor.Name}' konnte nicht geladen werden.", ex), "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            HintText.Content = "VST3-Plugin konnte nicht geladen werden.";
+            return;
+        }
+        if (dialog.LoadErrorText != null)
+        {
+            dialog.ShowDialog();
+            HintText.Content = "VST3-Plugin konnte nicht geladen werden (Details siehe Dialog).";
+            return;
+        }
+        dialog.LivePreviewRequested += livePlugin =>
+        {
+            if (livePlugin is null) StopPreview();   // Dialog schließt → Live-Vorschau stoppen, bevor das Plugin disposed wird
+            else StartLiveVstPreview(livePlugin);
+        };
         try
         {
             if (dialog.ShowDialog() != true) return;
             StopPlayback();
+            StopPreview();
             var state = dialog.ResultState;
-            var rendered = Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames, state);
+            var rendered = Vst3OfflineRenderer.Render(descriptor, document!.CreateSampleProvider(start, frames), document.SampleRate, document.Channels, frames, state);
             document.ReplaceFrames(start, rendered, frames);
             RefreshAfterEdit(start);
             HintText.Content = $"VST3-Effekt '{descriptor.Name}' angewendet.";
+            // Nach OK direkt die angewendete Version abspielen, damit der Effekt sofort hörbar ist
+            StartPlayback(start, frames);
         }
         catch (Exception exception)
         {
-            MessageBox.Show(this, $"Der VST3-Effekt konnte nicht angewendet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, BuildFullErrorText("Der VST3-Effekt konnte nicht angewendet werden.", exception), "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
             HintText.Content = "VST3-Effekt fehlgeschlagen.";
         }
         finally { StopPreview(); }
     }
 
-    private async void PreviewVstEffect(Vst3EffectDescriptor descriptor, byte[]? state)
+    private static string BuildFullErrorText(string prefix, Exception ex)
     {
-        if (document is null) return;
-        StopPreview();
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(prefix);
+        sb.AppendLine();
+        var current = ex;
+        int depth = 0;
+        while (current != null)
+        {
+            if (depth > 0) sb.AppendLine("--- Innere Exception ---");
+            sb.AppendLine($"Typ:        {current.GetType().FullName}");
+            sb.AppendLine($"Nachricht:  {current.Message}");
+            sb.AppendLine($"Source:     {current.Source}");
+            if (!string.IsNullOrWhiteSpace(current.StackTrace))
+                sb.AppendLine($"StackTrace:\n{current.StackTrace}");
+            if (current.Data?.Count > 0)
+            {
+                sb.AppendLine("Data:");
+                foreach (System.Collections.DictionaryEntry entry in current.Data)
+                    sb.AppendLine($"  {entry.Key}: {entry.Value}");
+            }
+            current = current.InnerException;
+            depth++;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Live-Vorschau: spielt die Auswahl (bzw. den ganzen Clip) in Endlosschleife durch das
+    /// <b>laufende</b> Plugin-Objekt des offenen Dialogs. Regler im Plugin-UI wirken sofort,
+    /// weil NAudio die Parameter-Änderungen beim nächsten Process-Block anwendet.
+    /// Wichtig: Das Plugin gehört dem Dialog – beim Schließen des Dialogs wird StopPreview()
+    /// aufgerufen, BEVOR das Plugin disposed wird (siehe RunApplyVstEffect/finally + OnClosed-Reihenfolge).
+    /// </summary>
+    private void StartLiveVstPreview(Vst3Plugin? livePlugin)
+    {
+        if (document is null || livePlugin is null) return;
         try
         {
             var selection = Waveform.GetSelection();
             var start = selection?.StartSample ?? 0;
             var frames = selection?.Length ?? document.FrameCount;
             if (frames <= 0) return;
-            var rendered = await Task.Run(() => Vst3OfflineRenderer.Render(descriptor, document.CreateSampleProvider(start, frames), document.Channels, frames, state));
-            await Dispatcher.InvokeAsync(() =>
+
+            // Quell-Samples in Stereo-Puffer kopieren (Renderer-Logik: Mono→Stereo-Duplizierung)
+            var stereo = new float[frames * 2];
+            var src = document.CreateSampleProvider(start, frames);
+            var buf = new float[4096 * document.Channels];
+            var written = 0;
+            while (written < frames)
             {
-                previewPlayer = CreatePlayer();
-                previewPlayer.Init(new ArrayWaveProvider(rendered, 0, rendered.Length, WaveFormat.CreateIeeeFloatWaveFormat(document.SampleRate, document.Channels)));
-                previewPlayer.Play();
-                HintText.Content = $"Vorschau: {descriptor.DisplayName}";
-            });
+                var want = Math.Min(frames - written, 4096);
+                var read = src.Read(buf.AsSpan(0, want * document.Channels));
+                if (read <= 0) break;
+                var readFrames = read / document.Channels;
+                for (var f = 0; f < readFrames; f++)
+                {
+                    var t = (written + f) * 2;
+                    if (document.Channels == 1) { stereo[t] = buf[f]; stereo[t + 1] = buf[f]; }
+                    else { stereo[t] = buf[f * 2]; stereo[t + 1] = buf[f * 2 + 1]; }
+                }
+                written += readFrames;
+            }
+            if (written <= 0) return;
+            Array.Resize(ref stereo, written * 2);
+
+            StopPlayback();   // Hauptwiedergabe aus (ruft auch StopPreview auf)
+            StopPreview();    // evtl. laufende Live-/Offline-Vorschau stoppen
+
+            var loop = new LoopingSampleProvider(stereo, 2, document.SampleRate);
+            var effect = new Vst3EffectSampleProvider(loop, livePlugin)
+            {
+                RenderTail = false,          // Live: kein Tail-Render, Endlosschleife läuft eh
+                CompensateLatency = true
+            };
+            previewPlayer = CreatePlayer();
+            previewPlayer.Init(effect);
+            previewPlayer.Play();
+            HintText.Content = $"Live-Vorschau: {frames / (double)document.SampleRate:F1}s Schleife durch das Plugin – Regler wirken sofort. Nochmal 'Live ▶' oder Dialog schließen stoppt.";
         }
         catch (Exception exception)
         {
             StopPreview();
-            MessageBox.Show(this, $"Die VST3-Vorschau konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            MessageBox.Show(this, $"Die Live-Vorschau konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -793,10 +1241,19 @@ public partial class MainWindow : Window
     private void Waveform_SelectionChanged(object? sender, EventArgs e) => UpdateSelectionText();
     private void UpdateSelectionText()
     {
-        if (document is null || Waveform.GetSelection() is not Selection selection) { StartText.Content = "Start: —"; EndText.Content = "Ende: —"; SelectionText.Content = "Auswahl: —"; SampleText.Content = $"Samples: {Waveform.CursorSample:N0} · keine Auswahl"; return; }
+        if (MultitrackPanel.Visibility == Visibility.Visible)
+        {
+            var range = Sequencer.GetPlaybackRange();
+            StartText.Content = range is { } r ? $"Start: {FormatTime(TimeSpan.FromSeconds(r.Start / (double)multitrack.SampleRate))}" : "Start: —";
+            EndText.Content = range is { } end ? $"Ende: {FormatTime(TimeSpan.FromSeconds((end.Start + end.Count) / (double)multitrack.SampleRate))}" : "Ende: —";
+            SelectionText.Content = range is { } length ? $"Dauer: {FormatTime(TimeSpan.FromSeconds(length.Count / (double)multitrack.SampleRate))}" : "Dauer: —";
+            SampleText.Content = range is null ? "Kein Loop-Bereich markiert" : "Markierter Loop-Bereich";
+            return;
+        }
+        if (document is null || Waveform.GetSelection() is not Selection selection) { StartText.Content = "Start: —"; EndText.Content = "Ende: —"; SelectionText.Content = "Dauer: —"; SampleText.Content = $"Samples: {Waveform.CursorSample:N0} · keine Auswahl"; return; }
         StartText.Content = $"Start: {FormatTime(TimeSpan.FromSeconds(selection.StartSample / (double)document.SampleRate))}";
         EndText.Content = $"Ende: {FormatTime(TimeSpan.FromSeconds(selection.EndSample / (double)document.SampleRate))}";
-        SelectionText.Content = $"Auswahl: {FormatTime(TimeSpan.FromSeconds(selection.Length / (double)document.SampleRate))}";
+        SelectionText.Content = $"Dauer: {FormatTime(TimeSpan.FromSeconds(selection.Length / (double)document.SampleRate))}";
         SampleText.Content = $"Samples: {selection.StartSample:N0} – {selection.EndSample:N0} ({selection.Length:N0})";
     }
 
@@ -811,15 +1268,23 @@ public partial class MainWindow : Window
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     private void FileList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (isRefreshingFileList || isActivatingDocument) return;
+        if (isRefreshingFileList || isActivatingDocument || MultitrackPanel.Visibility == Visibility.Visible) return;
         var index = FileList.SelectedIndex;
         if (index < 0 || index >= openDocuments.Count) return;
         var selected = openDocuments[index];
         if (!ReferenceEquals(selected, document)) ActivateDocument(selected);
     }
 
+    private void FileListRemove_Click(object sender, RoutedEventArgs e)
+    {
+        var index = FileList.SelectedIndex;
+        if (index < 0 || index >= openDocuments.Count) return;
+        RequestCloseDocument(openDocuments[index]);
+    }
+
     private void MainWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
     {
+        if (System.Windows.Input.Keyboard.FocusedElement is System.Windows.Controls.Primitives.TextBoxBase) return;
         var modifiers = System.Windows.Input.Keyboard.Modifiers;
         var key = e.Key;
         if (key == System.Windows.Input.Key.R && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))

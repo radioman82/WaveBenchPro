@@ -16,11 +16,13 @@ internal sealed class EffectDialog : Window
     private readonly StackPanel parameterRows = new();
     private bool updating;
     private EffectSettings current;
+    private readonly bool trackMode;
 
-    public EffectDialog(Window owner, NativeEffectKind kind)
+    public EffectDialog(Window owner, NativeEffectKind kind, EffectSettings? initial = null, bool trackMode = false)
     {
         Owner = owner;
         this.kind = kind;
+        this.trackMode = trackMode;
         current = EffectSettings.For(kind);
         Settings = current;
 
@@ -36,18 +38,20 @@ internal sealed class EffectDialog : Window
         Foreground = Application.Current.FindResource("Text") as Brush ?? Brushes.White;
 
         BuildUi();
+        ApplySettings(initial ?? current);
     }
 
     public EffectSettings Settings { get; private set; }
 
     public event Action<EffectSettings>? PreviewRequested;
+    public event Action<EffectSettings>? SettingsChanged;
 
     private void BuildUi()
     {
         var root = new StackPanel { Margin = new Thickness(18, 16, 18, 14) };
         root.Children.Add(new TextBlock
         {
-            Text = $"{DisplayName(kind)} auf die Auswahl anwenden (ohne Auswahl auf den gesamten Clip).",
+            Text = trackMode ? $"{DisplayName(kind)} – Spur-Effekt" : $"{DisplayName(kind)} auf die Auswahl anwenden (ohne Auswahl auf den gesamten Clip).",
             TextWrapping = TextWrapping.Wrap,
             Foreground = Application.Current.FindResource("Muted") as Brush ?? Brushes.Gray,
             Margin = new Thickness(0, 0, 0, 12)
@@ -95,7 +99,7 @@ internal sealed class EffectDialog : Window
         }
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 14, 0, 0) };
-        var preview = new Button { Content = "Vorschau", MinWidth = 100, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
+        var preview = new Button { Content = trackMode ? "▶ Live" : "Vorschau", MinWidth = 100, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
         preview.Click += (_, _) => PreviewRequested?.Invoke(current);
         var ok = new Button { Content = "OK", IsDefault = true, MinWidth = 96, Margin = new Thickness(0, 0, 8, 0), FontSize = 13 };
         ok.Click += (_, _) => { Settings = current; DialogResult = true; };
@@ -129,6 +133,7 @@ internal sealed class EffectDialog : Window
         {
             if (updating) return;
             current = update(current, slider.Value);
+            SettingsChanged?.Invoke(current);
             value.Text = slider.Value.ToString(format, System.Globalization.CultureInfo.GetCultureInfo("de-DE"));
         };
         updaters.Add(settings => { updating = true; slider.Value = Math.Clamp(read(settings), min, max); updating = false; value.Text = slider.Value.ToString(format, System.Globalization.CultureInfo.GetCultureInfo("de-DE")); });
@@ -147,6 +152,7 @@ internal sealed class EffectDialog : Window
         {
             if (updating) return;
             current = update(current, ToFrequency(slider.Value));
+            SettingsChanged?.Invoke(current);
             value.Text = $"{ToFrequency(slider.Value):0} Hz";
         };
         updaters.Add(settings =>
@@ -180,5 +186,6 @@ internal sealed class EffectDialog : Window
     {
         current = settings;
         foreach (var update in updaters) update(settings);
+        SettingsChanged?.Invoke(current);
     }
 }

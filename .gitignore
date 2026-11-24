@@ -7,3 +7,15 @@ portable-*/
 playback-verification/
 *.wav
 *.mp3
+samples/
+*.flac
+*.ogg
+*.opus
+*.m4a
+*.aac
+*.wma
+*.pdb
+TestResults/
+.vs/
+*.user
+*.suo

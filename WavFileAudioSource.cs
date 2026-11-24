@@ -1,0 +1,212 @@
+using System.IO;
+using System.Text;
+
+namespace WellenEditor;
+
+/// <summary>
+/// <see cref="IAudioSource"/> für RIFF/WAVE-Dateien (PCM 16/24/32 Bit, IEEE-Float 32/64 Bit,
+/// inkl. WAVEFORMATEXTENSIBLE). Der data-Chunk bleibt auf Disk: <see cref="ReadFrames"/>
+/// seeked in die Datei und dekodiert nur den angeforderten Block. Dadurch sind auch
+/// WAV-Dateien &gt; 2 GB über long-Frame-Positionen ohne komplettes Laden nutzbar.
+/// Nicht unterstützt: komprimierte Formate (z. B. ADPCM, MPEG) und RF64.
+/// </summary>
+public sealed class WavFileAudioSource : IAudioSource
+{
+    private const short FormatPcm = 1;
+    private const short FormatIeeeFloat = 3;
+    private const short FormatExtensible = unchecked((short)0xFFFE);
+
+    /// <summary>Maximale Byte-Größe eines einzelnen Lese-/Dekodier-Schritts innerhalb von ReadFrames.</summary>
+    private const int MaxChunkBytes = 1024 * 1024;
+
+    private readonly FileStream stream;
+    private long dataOffset;   // Byte-Offset des data-Chunks in der Datei
+    private int blockAlign;    // Bytes pro Frame (Channels * BitsPerSample / 8)
+    private short formatTag;   // effektiver Format-Tag (bei Extensible aus der SubFormat-GUID)
+    private byte[]? decodeBuffer;
+
+    public int SampleRate { get; private set; }
+    public int Channels { get; private set; }
+    public int BitsPerSample { get; private set; }
+    public long FrameCount { get; private set; }
+
+    /// <summary>
+    /// Summe der bisher von Disk gelesenen Audiodaten-Bytes (nur data-Chunk, ohne Header).
+    /// Ermöglicht den Nachweis, dass nicht die komplette Datei geladen wird.
+    /// </summary>
+    internal long BytesReadFromDisk { get; private set; }
+
+    public WavFileAudioSource(string path)
+    {
+        // Der Hintergrund-Cache darf weder Löschen noch Umbenennen der Quelldatei blockieren.
+        stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        try
+        {
+            ParseHeader();
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
+    private void ParseHeader()
+    {
+        var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
+
+        if (reader.ReadUInt32() != 0x46464952) throw new InvalidDataException("Keine RIFF-Datei: 'RIFF'-Kennung fehlt.");
+        reader.ReadUInt32(); // RIFF-Gesamtgröße (ignoriert)
+        if (reader.ReadUInt32() != 0x45564157) throw new InvalidDataException("Keine WAVE-Datei: 'WAVE'-Kennung fehlt.");
+
+        short fmtTag = 0;
+        int channels = 0, sampleRate = 0, blockAlignLocal = 0, bits = 0;
+        long dataLength = -1;
+
+        while (stream.Position <= stream.Length - 8)
+        {
+            uint chunkId = reader.ReadUInt32();
+            uint chunkSize = reader.ReadUInt32();
+            long chunkDataStart = stream.Position;
+
+            if (chunkId == 0x20746D66) // 'fmt '
+            {
+                fmtTag = reader.ReadInt16();
+                channels = reader.ReadInt16();
+                sampleRate = reader.ReadInt32();
+                reader.ReadInt32(); // avgBytesPerSec
+                blockAlignLocal = reader.ReadInt16();
+                bits = reader.ReadInt16();
+                if (fmtTag == FormatExtensible && chunkSize >= 40)
+                {
+                    reader.ReadInt16(); // cbSize
+                    reader.ReadInt16(); // validBitsPerSample
+                    reader.ReadInt32(); // channelMask
+                    var subFormat = reader.ReadBytes(16);
+                    if (subFormat.Length < 2) throw new InvalidDataException("WAVEFORMATEXTENSIBLE ohne SubFormat-GUID.");
+                    fmtTag = (short)(subFormat[0] | (subFormat[1] << 8));
+                }
+            }
+            else if (chunkId == 0x61746164) // 'data'
+            {
+                dataOffset = chunkDataStart;
+                // tamaño kann bei defekten/streaming-WAVs 0xFFFFFFFF sein -> auf Dateigröße clampen
+                dataLength = Math.Min(chunkSize, stream.Length - chunkDataStart);
+            }
+
+            // zum nächsten Chunk (ungerade Chunk-Größen sind um 1 Pad-Byte erweitert)
+            stream.Position = chunkDataStart + chunkSize + (chunkSize & 1);
+        }
+
+        if (fmtTag != FormatPcm && fmtTag != FormatIeeeFloat)
+            throw new NotSupportedException($"WAV-Kompression (Format-Tag {fmtTag}) wird nicht unterstützt. Nur PCM und IEEE-Float.");
+        if (!IsSupportedSampleFormat(fmtTag, bits))
+            throw new NotSupportedException($"Sample-Format {fmtTag}/{bits} Bit wird nicht unterstützt (PCM 16/24/32, IEEE-Float 32/64).");
+        if (channels < 1) throw new InvalidDataException("WAV hat keine Kanäle.");
+        if (sampleRate < 1) throw new InvalidDataException("WAV hat keine gültige Abtastrate.");
+        if (blockAlignLocal != channels * bits / 8)
+            throw new InvalidDataException($"Ungültiges blockAlign {blockAlignLocal} (erwartet {channels * bits / 8}).");
+        if (dataLength < 0) throw new InvalidDataException("WAV enthält keinen data-Chunk.");
+
+        formatTag = fmtTag;
+        Channels = channels;
+        SampleRate = sampleRate;
+        BitsPerSample = bits;
+        blockAlign = blockAlignLocal;
+        FrameCount = dataLength / blockAlign;
+    }
+
+    private static bool IsSupportedSampleFormat(short tag, int bits) =>
+        (tag == FormatPcm && bits is 16 or 24 or 32) || (tag == FormatIeeeFloat && bits is 32 or 64);
+
+    /// <inheritdoc />
+    public int ReadFrames(long startFrame, float[] buffer, int bufferOffsetFrames, int frameCount)
+    {
+        ArgumentNullException.ThrowIfNull(buffer);
+        if (startFrame < 0) throw new ArgumentOutOfRangeException(nameof(startFrame), "Frame-Position darf nicht negativ sein.");
+        if (bufferOffsetFrames < 0) throw new ArgumentOutOfRangeException(nameof(bufferOffsetFrames));
+        if (frameCount < 0) throw new ArgumentOutOfRangeException(nameof(frameCount));
+        if (frameCount == 0) return 0;
+
+        long available = FrameCount - startFrame;
+        if (available <= 0) return 0; // an oder nach dem Dateiende
+
+        int framesToRead = (int)Math.Min(frameCount, available);
+        if (buffer.Length < ((long)bufferOffsetFrames + framesToRead) * Channels)
+            throw new ArgumentException("Puffer ist zu klein für Offset + angeforderte Frames (interleaved: Frames * Channels).", nameof(buffer));
+
+        int framesRead = 0;
+        while (framesRead < framesToRead)
+        {
+            int chunkFrames = Math.Min(framesToRead - framesRead, MaxChunkBytes / blockAlign);
+            int chunkBytes = chunkFrames * blockAlign;
+
+            if (decodeBuffer == null || decodeBuffer.Length < chunkBytes)
+                decodeBuffer = new byte[chunkBytes];
+
+            stream.Position = dataOffset + (startFrame + framesRead) * (long)blockAlign;
+            int read = ReadExactly(stream, decodeBuffer, chunkBytes);
+            if (read < chunkBytes)
+                throw new EndOfStreamException($"Unerwartetes Dateiende: {read} von {chunkBytes} Bytes gelesen (Frame {startFrame + framesRead}).");
+
+            BytesReadFromDisk += chunkBytes;
+            Decode(decodeBuffer, chunkBytes, buffer, (bufferOffsetFrames + framesRead) * Channels, chunkFrames);
+            framesRead += chunkFrames;
+        }
+        return framesRead;
+    }
+
+    private static int ReadExactly(Stream s, byte[] buffer, int count)
+    {
+        int total = 0;
+        while (total < count)
+        {
+            int r = s.Read(buffer, total, count - total);
+            if (r == 0) break;
+            total += r;
+        }
+        return total;
+    }
+
+    /// <summary>Dekodiert einen gelesenen Block interleaved nach float (-1..1).</summary>
+    private void Decode(byte[] src, int byteCount, float[] dst, int dstOffsetSamples, int frames)
+    {
+        int samples = frames * Channels;
+        switch (formatTag, BitsPerSample)
+        {
+            case (FormatPcm, 16):
+                for (int i = 0; i < samples; i++)
+                    dst[dstOffsetSamples + i] = BitConverter.ToInt16(src, i * 2) / 32768f;
+                break;
+
+            case (FormatPcm, 24):
+                for (int i = 0; i < samples; i++)
+                {
+                    int v = src[i * 3] | (src[i * 3 + 1] << 8) | (src[i * 3 + 2] << 16);
+                    if ((v & 0x800000) != 0) v |= unchecked((int)0xFF000000); // Vorzeichenerweiterung
+                    dst[dstOffsetSamples + i] = v / 8388608f;
+                }
+                break;
+
+            case (FormatPcm, 32):
+                for (int i = 0; i < samples; i++)
+                    dst[dstOffsetSamples + i] = BitConverter.ToInt32(src, i * 4) / 2147483648f;
+                break;
+
+            case (FormatIeeeFloat, 32):
+                // byteCount == samples * 4 -> direkt in den float-Puffer kopieren
+                Buffer.BlockCopy(src, 0, dst, dstOffsetSamples * sizeof(float), byteCount);
+                break;
+
+            case (FormatIeeeFloat, 64):
+                for (int i = 0; i < samples; i++)
+                    dst[dstOffsetSamples + i] = (float)BitConverter.ToDouble(src, i * 8);
+                break;
+
+            default:
+                throw new NotSupportedException($"Sample-Format {formatTag}/{BitsPerSample} Bit wird nicht unterstützt.");
+        }
+    }
+
+    public void Dispose() => stream.Dispose();
+}
