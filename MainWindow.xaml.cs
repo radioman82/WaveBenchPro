@@ -78,7 +78,7 @@ public partial class MainWindow : Window
             var dialog = new TrackEffectsWindow(this, track,
                 () => { multitrackMixer?.UpdateTrackEffects(track); Sequencer.SetProject(multitrack); },
                 () => { if (!isPlaying) PlayMultitrack_Click(this, new RoutedEventArgs()); },
-                StopPlayback);
+                StopPlayback, vstEffects);
             dialog.ShowDialog();
             Sequencer.SetProject(multitrack);
         };

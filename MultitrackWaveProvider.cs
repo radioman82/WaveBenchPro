@@ -54,7 +54,7 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(project.SampleRate, 2);
         tracks = project.Tracks.ToArray();
         voices = tracks.SelectMany(track => track.Clips.Select(clip =>
-            new Voice(track, clip.StartFrame, Prepare(clip, project.SampleRate)))).ToArray();
+            new Voice(track, clip.StartFrame, Prepare(clip, project.SampleRate, track.Effects)))).ToArray();
         if (voices.Length == 0) throw new InvalidOperationException("Bitte zuerst ein Sample in die Mehrspuransicht ziehen.");
         trackMixes = tracks.Select(track => new TrackMix { Track = track, Voices = voices.Where(v => ReferenceEquals(v.Track, track)).ToArray(), Effects = new TrackEffectProcessor(track.Effects, project.SampleRate) }).ToArray();
         FrameCount = voices.Max(v => v.Start + v.Samples.Length / 2);
@@ -72,7 +72,7 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         pendingWindow = activeWindow = new PlaybackWindow(rangeStart, rangeEnd, false);
     }
 
-    private static float[] Prepare(MultitrackClip clip, int rate)
+    private static float[] Prepare(MultitrackClip clip, int rate, IReadOnlyList<TrackEffectSlot> effects)
     {
         var source = clip.Source;
         var input = source.Samples;
@@ -90,7 +90,21 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
                 stereo[frame * 2 + channel] = input[a * source.Channels + c] * (1 - fraction) + input[b * source.Channels + c] * fraction;
             }
         }
-        return AudioTimeStretch.Stretch(stereo, clip.DurationScale);
+        stereo = AudioTimeStretch.Stretch(stereo, clip.DurationScale);
+        foreach (var effect in effects.Where(effect => effect.Enabled && effect.Vst is not null))
+        {
+            try
+            {
+                var vstSource = new ArraySampleProvider(stereo, WaveFormat.CreateIeeeFloatWaveFormat(rate, 2));
+                var rendered = Vst3OfflineRenderer.Render(effect.Vst!, vstSource, rate, 2, stereo.Length / 2, effect.VstState);
+                if (rendered.Length == stereo.Length) stereo = rendered;
+            }
+            catch
+            {
+                // Ein nicht ladbares Plugin darf die Mehrspur-Wiedergabe nicht blockieren.
+            }
+        }
+        return stereo;
     }
 
     public int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));

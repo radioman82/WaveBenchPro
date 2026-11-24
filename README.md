@@ -16,7 +16,7 @@ Nativer Windows-Audioeditor mit klassischer Wellenformansicht und einer Mehrspur
 - Beat-/Taktraster im 4/4-Takt, BPM-Einstellung und Tempoanpassung vorbereiteter Clips. Die Tempoerkennung liest eine BPM-Zahl aus passenden Dateinamen; es gibt noch keine automatische Audioanalyse des Tempos.
 - Stumm/Solo, Lautstärke und Panorama pro Spur, verschiebbare Clips und Mixdown.
 - Live verschiebbarer Loop-Bereich im Zeitlineal. Start, Ende und Dauer unten beziehen sich in Mehrspur auf diesen Bereich.
-- Pro Spur ein FX-Rack mit Verstärkung, EQ, Hoch-/Tiefpass, Kompressor und Limiter. Diese Spur-Effekte verändern die Quelldateien nicht; VST3-Inserts pro Spur sind noch nicht enthalten.
+- Pro Spur ein FX-Rack mit Verstärkung, EQ, Hoch-/Tiefpass, Kompressor und Limiter. Zusätzlich können die gefundenen VST3-Effekte direkt als Inserts ausgewählt, konfiguriert, aktiviert/deaktiviert und entfernt werden. Diese Spur-Effekte verändern die Quelldateien nicht; VST3-Spureffekte werden beim Aufbau des Mehrspur-Streams angewendet.
 
 Mehrspur ist weiterhin im Aufbau. Ein vollständiges Speichern und Wiederherstellen von Mehrspur-Projekten ist noch nicht implementiert.
 

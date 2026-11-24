@@ -1,13 +1,17 @@
 namespace WellenEditor;
 
-internal sealed record TrackEffectSlot(Guid Id, NativeEffectKind Kind, EffectSettings Settings, bool Enabled = true);
+internal sealed record TrackEffectSlot(Guid Id, NativeEffectKind Kind, EffectSettings Settings, bool Enabled = true, Vst3EffectDescriptor? Vst = null, byte[]? VstState = null)
+{
+    public static TrackEffectSlot ForVst(Vst3EffectDescriptor descriptor, byte[]? state = null) =>
+        new(Guid.NewGuid(), NativeEffectKind.Gain, new EffectSettings(), true, descriptor with { }, state);
+}
 
 /// <summary>Stateful stereo insert chain. Constructed outside Read; no allocations in Process.</summary>
 internal sealed class TrackEffectProcessor
 {
     private readonly Stage[] stages;
     public TrackEffectProcessor(IEnumerable<TrackEffectSlot> effects, int rate) =>
-        stages = effects.Where(fx => fx.Enabled).Select(fx => new Stage(fx, rate)).ToArray();
+        stages = effects.Where(fx => fx.Enabled && fx.Vst is null).Select(fx => new Stage(fx, rate)).ToArray();
     public void Process(Span<float> samples)
     {
         foreach (var stage in stages) stage.Process(samples);
