@@ -16,14 +16,15 @@ Datum: 25.11.2026. Basis: `04194f29a38d6e80ec4ddd7dc60f15b77458e236`. Änderunge
 
 ## Wiedergabeintegration
 
-Der Ringpuffer bleibt ein interner Prototyp. Die vorhandene Engine ist weiterhin Standard; die experimentelle UI-Umschaltung, Prefill, Generationen, Seek/Loop, Live-Regler und sichere VST-Invalidierung sind noch nicht umgesetzt. Kein Hardwaretest oder Wiedergabe-Langzeitlauf wurde durchgeführt.
+Der Ringpuffer bleibt ein interner Prototyp. Prefill bereitet Blöcke vor und meldet Timeout oder Rendererfehler; Tests decken auch kurze Quellen und einen Fehler nach bereits gepufferten Blöcken ab. Die vorhandene Engine ist weiterhin Standard. Die experimentelle UI-Umschaltung, Generationen, Seek/Loop, Live-Regler und sichere VST-Invalidierung sind noch nicht umgesetzt. Ein konkretes Hindernis für die Gleichwertigkeit: BlockStretchSource.ReadFrames erlaubt derzeit ausschließlich fortlaufendes Lesen ab dem Clipanfang; beliebige Sprünge und Loops mit korrekt erhaltenem WSOLA-Zustand sind nicht implementiert. Daher wurde die Wiedergabe nicht vorschnell umgeschaltet. Kein Hardwaretest oder Wiedergabe-Langzeitlauf wurde durchgeführt.
 
 Offline-Benchmark in einem isolierten Release-Prozess auf Windows, AMD Ryzen 5 5600G, 48 kHz Stereo: acht getrennte, nicht-sparse, synthetische Dateien mit hörbarem periodischem Signal und je 60 Minuten (zusammen 11.059.200.464 Bytes) wurden ohne Effekte in 24,623 Sekunden gemischt. Peak Working Set: 85.491.712 Bytes (81,5 MiB); die temporäre Ausgabedatei benötigte 1.382.400.058 Bytes. Die Messung umfasst den Export; die Quellgenerierung erfolgte davor. Dies ist kein Hardware- oder Echtzeittest und enthält keine VST-Effekte.
 
 ## Prüfung und Veröffentlichung
 
-- `dotnet test tests\WellenEditor.Tests\WellenEditor.Tests.csproj --no-restore`: 214 bestanden.
+- `dotnet test tests\WellenEditor.Tests\WellenEditor.Tests.csproj --no-restore`: 217 bestanden.
 - Release-Publish für win-x64 erfolgreich; bestehende NAudio-Veraltungswarnungen und eine vorhandene async-Warnung bleiben.
 - `git diff --check`: vor Commit erfolgreich. Kein manueller GUI- oder Hardwaretest der neuen EXE.
 - Bericht 06 wurde über Google Drive für Desktop nach `H:\Meine Ablage\Projekte` übertragen und mit der lokalen Fassung verglichen.
+- Umgesetzter Code bis Commit `db11cf7`; der Bericht wird separat eingecheckt.
 - Arbeitsauftrag 07 ist **nicht abgeschlossen**. Die offenen Befunde und Abnahmepunkte oben sind die Fortsetzung; ASIO, Exclusive, RF64 und Projektformat wurden nicht geändert.
