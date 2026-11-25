@@ -118,7 +118,7 @@ public partial class MainWindow : Window
         Closing += async (_, e) =>
         {
             if (closeAfterRecording) return;
-            if (recordingStopPending)
+            if (recordingStopPending || preparingMultitrack)
             {
                 e.Cancel = true;
                 return;
@@ -325,6 +325,43 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
         finally { if (workspace is not null) workspace.IsEnabled = true; }
+    }
+
+    private async void StreamingMixdown_Click(object sender, RoutedEventArgs e)
+    {
+        if (preparingMultitrack) return;
+        var dialog = new SaveFileDialog { Filter = "WAV-Audio (*.wav)|*.wav", FileName = "Mixdown.wav", AddExtension = true };
+        if (dialog.ShowDialog(this) != true) return;
+        StopPlayback();
+        using var cancellation = new CancellationTokenSource();
+        var bar = new ProgressBar { Minimum = 0, Maximum = 100, Height = 18, Margin = new Thickness(16) };
+        var cancel = new Button { Content = "Abbrechen", Width = 110, Margin = new Thickness(16) };
+        var panel = new StackPanel();
+        panel.Children.Add(bar);
+        panel.Children.Add(cancel);
+        var progressWindow = new Window { Title = "Mixdown erstellen", Owner = this, Width = 360, Height = 150, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize, Content = panel };
+        cancel.Click += (_, _) => { cancel.IsEnabled = false; cancellation.Cancel(); };
+        var finished = false;
+        progressWindow.Closing += (_, args) => { if (!finished) { args.Cancel = true; cancellation.Cancel(); cancel.IsEnabled = false; } };
+        var workspace = Content as UIElement;
+        if (workspace is not null) workspace.IsEnabled = false;
+        preparingMultitrack = true;
+        progressWindow.Show();
+        try
+        {
+            var progress = new Progress<double>(value => bar.Value = value * 100);
+            await Task.Run(() => BlockMixdownRenderer.WriteWave(multitrack, dialog.FileName, cancellation.Token, progress));
+            HintText.Content = "Mixdown als WAV gespeichert.";
+        }
+        catch (OperationCanceledException) { HintText.Content = "Mixdown abgebrochen."; }
+        catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally
+        {
+            finished = true;
+            progressWindow.Close();
+            preparingMultitrack = false;
+            if (workspace is not null) workspace.IsEnabled = true;
+        }
     }
 
     private async void PlayMultitrack_Click(object sender, RoutedEventArgs e)

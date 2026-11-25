@@ -307,6 +307,10 @@ public sealed class AudioDocument : IDisposable
         return new SegmentedAudioSource(new WavFileAudioSource(streamingWavPath), streamingSegments.ToArray());
     }
 
+    internal IAudioSource OpenBlockSource() => IsStreaming
+        ? CreateSegmentedSource()
+        : new MemoryAudioSource(samples, Channels, SampleRate);
+
     private void SaveStreamingUndo()
     {
         streamingUndoHistory.Push(streamingSegments!.ToList());
