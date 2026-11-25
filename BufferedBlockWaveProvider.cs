@@ -39,6 +39,27 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     public long TimelineFramesRead => AudioFramesRead;
     public Exception? WorkerError => Volatile.Read(ref workerError);
     internal Task Completion => worker;
+    internal int Capacity => blocks.Length;
+
+    /// <summary>Prepares blocks outside the audio callback; false indicates timeout.</summary>
+    internal async Task<bool> PrefillAsync(int minimumBlocks, TimeSpan timeout, CancellationToken token = default)
+    {
+        if (minimumBlocks < 1 || minimumBlocks > blocks.Length) throw new ArgumentOutOfRangeException(nameof(minimumBlocks));
+        if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        while (true)
+        {
+            token.ThrowIfCancellationRequested();
+            if (Volatile.Read(ref complete) != 0)
+            {
+                if (WorkerError is { } error) throw new InvalidOperationException("Die Audiovorbereitung ist fehlgeschlagen.", error);
+                return Volatile.Read(ref produced) > Volatile.Read(ref consumed);
+            }
+            if (Volatile.Read(ref produced) - Volatile.Read(ref consumed) >= minimumBlocks) return true;
+            if (stopwatch.Elapsed >= timeout) return false;
+            await Task.Delay(5, token).ConfigureAwait(false);
+        }
+    }
 
     public BufferedBlockWaveProvider(IBlockAudioRenderer renderer, int capacity = 8)
     {

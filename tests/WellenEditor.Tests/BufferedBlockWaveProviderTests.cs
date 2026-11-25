@@ -77,6 +77,39 @@ public sealed class BufferedBlockWaveProviderTests
     }
 
     [Fact]
+    public async Task PrefillCompletesForShortSourceAndReportsRendererFailure()
+    {
+        using var sound = AudioDocument.FromSamples(new float[100], 1, 48000);
+        var project = new MultitrackProject(); project.Add(sound);
+        using var shortProvider = new BufferedBlockWaveProvider(new BlockMixdownRenderer(project, 256), 4);
+        Assert.True(await shortProvider.PrefillAsync(2, TimeSpan.FromSeconds(2)));
+        using var failed = new BufferedBlockWaveProvider(new FailingRenderer());
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => failed.PrefillAsync(1, TimeSpan.FromSeconds(2)));
+        Assert.IsType<InvalidOperationException>(error.InnerException);
+    }
+
+    [Fact]
+    public async Task PrefillCanTimeoutWhileRendererIsBlocked()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var provider = new BufferedBlockWaveProvider(new GateRenderer(entered, release));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        try { Assert.False(await provider.PrefillAsync(1, TimeSpan.FromMilliseconds(30))); }
+        finally { release.Set(); }
+        await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task PrefillReportsFailureEvenWhenBlocksWereAlreadyQueued()
+    {
+        using var provider = new BufferedBlockWaveProvider(new FailsAfterBlockRenderer(), 2);
+        await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => provider.PrefillAsync(1, TimeSpan.FromSeconds(2)));
+        Assert.IsType<InvalidOperationException>(error.InnerException);
+    }
+
+    [Fact]
     public async Task StopTimeoutDoesNotDisposeBlockedRendererUntilItReturns()
     {
         using var entered = new ManualResetEventSlim();
@@ -168,6 +201,15 @@ public sealed class BufferedBlockWaveProviderTests
         public int SampleRate => 48000;
         public int BlockFrames => 4;
         public int Read(float[] output, int frames) => throw new InvalidOperationException("simulated renderer failure");
+        public void Dispose() { }
+    }
+
+    private sealed class FailsAfterBlockRenderer : IBlockAudioRenderer
+    {
+        private int reads;
+        public int SampleRate => 48000;
+        public int BlockFrames => 4;
+        public int Read(float[] output, int frames) => ++reads == 1 ? frames : throw new InvalidOperationException("simulated renderer failure");
         public void Dispose() { }
     }
 
