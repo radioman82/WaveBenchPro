@@ -13,8 +13,8 @@ public static class Vst3OfflineRenderer
 
     /// <summary>
     /// Liefert die bearbeiteten Samples in der Kanalanzahl der Quelle zurück.
-    /// Der Host rechnet intern stereo; Mono-Spuren werden auf links Stereo hoch- und danach
-    /// wieder auf Mono zurückgerechnet. Die Länge bleibt unverändert.
+    /// Der Host rechnet intern stereo; Mono-Spuren werden auf Stereo hoch- und danach
+    /// mit einem Mittelwert beider Plugin-Ausgänge wieder auf Mono zurückgerechnet.
     /// </summary>
     public static float[] Render(Vst3EffectDescriptor descriptor, ISampleProvider source, int sampleRate, int sourceChannels, int frames, byte[]? state = null)
     {
@@ -77,9 +77,13 @@ public static class Vst3OfflineRenderer
         {
             for (var channel = 0; channel < sourceChannels; channel++)
             {
-                var sourceChannel = sourceChannels == 1 ? 0 : channel;
-                var index = frame * 2 + sourceChannel;
-                result[frame * sourceChannels + channel] = index < rendered.Count ? rendered[index] : stereo[index];
+                var leftIndex = frame * 2;
+                var rightIndex = leftIndex + 1;
+                var left = leftIndex < rendered.Count ? rendered[leftIndex] : stereo[leftIndex];
+                var right = rightIndex < rendered.Count ? rendered[rightIndex] : stereo[rightIndex];
+                result[frame * sourceChannels + channel] = sourceChannels == 1
+                    ? (left + right) * 0.5f
+                    : channel == 0 ? left : right;
             }
         }
         return result;

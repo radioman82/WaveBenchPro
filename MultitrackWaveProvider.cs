@@ -17,6 +17,8 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         public required TrackEffectProcessor Effects;
     }
     private readonly TrackMix[] trackMixes;
+    private readonly List<string> preparationWarnings = new();
+    public IReadOnlyList<string> PreparationWarnings => preparationWarnings;
     public void UpdateTrackEffects(MultitrackTrack track)
     {
         var processor = new TrackEffectProcessor(track.Effects, WaveFormat.SampleRate);
@@ -54,7 +56,7 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(project.SampleRate, 2);
         tracks = project.Tracks.ToArray();
         voices = tracks.SelectMany(track => track.Clips.Select(clip =>
-            new Voice(track, clip.StartFrame, Prepare(clip, project.SampleRate, track.Effects)))).ToArray();
+            new Voice(track, clip.StartFrame, Prepare(clip, project.SampleRate, track.Effects, preparationWarnings)))).ToArray();
         if (voices.Length == 0) throw new InvalidOperationException("Bitte zuerst ein Sample in die Mehrspuransicht ziehen.");
         trackMixes = tracks.Select(track => new TrackMix { Track = track, Voices = voices.Where(v => ReferenceEquals(v.Track, track)).ToArray(), Effects = new TrackEffectProcessor(track.Effects, project.SampleRate) }).ToArray();
         FrameCount = voices.Max(v => v.Start + v.Samples.Length / 2);
@@ -72,24 +74,11 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         pendingWindow = activeWindow = new PlaybackWindow(rangeStart, rangeEnd, false);
     }
 
-    private static float[] Prepare(MultitrackClip clip, int rate, IReadOnlyList<TrackEffectSlot> effects)
+    private static float[] Prepare(MultitrackClip clip, int rate, IReadOnlyList<TrackEffectSlot> effects, List<string> warnings)
     {
         var source = clip.Source;
-        var input = source.Samples;
-        var frames = checked((int)Math.Ceiling(source.FrameCount * (double)rate / source.SampleRate));
-        var stereo = new float[checked(frames * 2)];
-        for (var frame = 0; frame < frames; frame++)
-        {
-            var offset = frame * (double)source.SampleRate / rate;
-            var a = Math.Min(source.FrameCount - 1, (int)offset);
-            var b = Math.Min(source.FrameCount - 1, a + 1);
-            var fraction = (float)(offset - a);
-            for (var channel = 0; channel < 2; channel++)
-            {
-                var c = Math.Min(channel, source.Channels - 1);
-                stereo[frame * 2 + channel] = input[a * source.Channels + c] * (1 - fraction) + input[b * source.Channels + c] * fraction;
-            }
-        }
+        var resampled = AudioFormatConverter.Resample(source.Samples, source.Channels, source.SampleRate, rate);
+        var stereo = AudioFormatConverter.ConvertChannels(resampled, source.Channels, 2);
         stereo = AudioTimeStretch.Stretch(stereo, clip.DurationScale);
         foreach (var effect in effects.Where(effect => effect.Enabled && effect.Vst is not null))
         {
@@ -98,10 +87,11 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
                 var vstSource = new ArraySampleProvider(stereo, WaveFormat.CreateIeeeFloatWaveFormat(rate, 2));
                 var rendered = Vst3OfflineRenderer.Render(effect.Vst!, vstSource, rate, 2, stereo.Length / 2, effect.VstState);
                 if (rendered.Length == stereo.Length) stereo = rendered;
+                else warnings.Add($"Spur '{clip.Source.DisplayName}': Plugin '{effect.Vst!.DisplayName}' lieferte eine unerwartete Ausgabelänge; Effekt wurde übersprungen.");
             }
-            catch
+            catch (Exception exception)
             {
-                // Ein nicht ladbares Plugin darf die Mehrspur-Wiedergabe nicht blockieren.
+                warnings.Add($"Spur '{clip.Source.DisplayName}': Plugin '{effect.Vst!.DisplayName}' konnte nicht angewendet werden ({exception.Message}); Effekt wurde übersprungen.");
             }
         }
         return stereo;
@@ -138,7 +128,7 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         var output = MemoryMarshal.Cast<byte, float>(buffer[..(frames * 8)]);
         output.Clear();
         var anySolo = false;
-        foreach (var track in tracks) anySolo |= track.Solo;
+        foreach (var mix in trackMixes) anySolo |= mix.Track.Solo && mix.Voices.Length > 0;
         foreach (var mix in trackMixes)
         {
             var track = mix.Track;
@@ -168,7 +158,8 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
                 output[i + 1] += trackBuffer[i + 1] * right;
             }
         }
-        for (var i = 0; i < output.Length; i++) output[i] = Math.Clamp(output[i], -1f, 1f);
+        // Keep internal mix headroom. Hard clipping here would permanently distort
+        // both playback and float mixdowns when several loud tracks are summed.
     }
     public void Rewind() => position = Volatile.Read(ref pendingWindow)!.Start;
 }

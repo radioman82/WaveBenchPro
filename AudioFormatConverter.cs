@@ -15,6 +15,19 @@ public static class AudioFormatConverter
         if (count < 0 || count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
         ArgumentNullException.ThrowIfNull(format);
 
+        var encoding = format.Encoding;
+        if (encoding == WaveFormatEncoding.Extensible)
+        {
+            if (format is not WaveFormatExtensible extensible)
+                throw new NotSupportedException("WAVEFORMATEXTENSIBLE ohne lesbare SubFormat-GUID.");
+            encoding = extensible.SubFormat switch
+            {
+                var subFormat when subFormat == new Guid("00000001-0000-0010-8000-00aa00389b71") => WaveFormatEncoding.Pcm,
+                var subFormat when subFormat == new Guid("00000003-0000-0010-8000-00aa00389b71") => WaveFormatEncoding.IeeeFloat,
+                _ => throw new NotSupportedException($"WAVEFORMATEXTENSIBLE-SubFormat {extensible.SubFormat} wird nicht unterstützt.")
+            };
+        }
+
         var bytesPerSample = format.BitsPerSample / 8;
         if (bytesPerSample <= 0) throw new InvalidDataException("Ungültiges Audio-Sampleformat.");
         var sampleCount = count / bytesPerSample;
@@ -23,7 +36,7 @@ public static class AudioFormatConverter
         for (var index = 0; index < sampleCount; index++)
         {
             var position = index * bytesPerSample;
-            result[index] = (format.Encoding, bytesPerSample) switch
+            result[index] = (encoding, bytesPerSample) switch
             {
                 (WaveFormatEncoding.IeeeFloat, 4) => BitConverter.ToSingle(buffer, position),
                 (WaveFormatEncoding.Pcm, 1) => (buffer[position] - 128) / 128f,
@@ -31,7 +44,7 @@ public static class AudioFormatConverter
                 (WaveFormatEncoding.Pcm, 3) => ReadPcm24(buffer, position) / 8388608f,
                 (WaveFormatEncoding.Pcm, 4) => BitConverter.ToInt32(buffer, position) / 2147483648f,
                 _ => throw new NotSupportedException(
-                    $"Audioformat {format.Encoding} mit {format.BitsPerSample} Bit wird nicht unterstützt.")
+                    $"Audioformat {encoding} mit {format.BitsPerSample} Bit wird nicht unterstützt.")
             };
         }
         return result;
@@ -48,24 +61,57 @@ public static class AudioFormatConverter
         if (sourceRate == targetRate) return samples;
 
         var sourceFrames = samples.Length / channels;
-        var targetFrames = (int)Math.Round(sourceFrames * targetRate / (double)sourceRate);
-        var result = new float[targetFrames * channels];
+        var resampleSource = targetRate < sourceRate
+            ? LowPassBeforeDownsampling(samples, channels, (double)targetRate / sourceRate)
+            : samples;
+        var targetFrames = checked((int)Math.Round((double)sourceFrames * targetRate / sourceRate));
+        var result = new float[checked(targetFrames * channels)];
         if (targetFrames == 0) return result;
 
         for (var frame = 0; frame < targetFrames; frame++)
         {
-            var sourcePosition = frame * sourceRate / (double)targetRate;
+            var sourcePosition = (double)frame * sourceRate / targetRate;
             var lower = (int)Math.Floor(sourcePosition);
             var fraction = (float)(sourcePosition - lower);
             var upper = Math.Min(lower + 1, sourceFrames - 1);
             for (var channel = 0; channel < channels; channel++)
             {
-                var first = samples[lower * channels + channel];
-                var second = samples[upper * channels + channel];
+                var first = resampleSource[lower * channels + channel];
+                var second = resampleSource[upper * channels + channel];
                 result[frame * channels + channel] = first + (second - first) * fraction;
             }
         }
         return result;
+    }
+
+    private static float[] LowPassBeforeDownsampling(float[] samples, int channels, double rateRatio)
+    {
+        var frames = samples.Length / channels;
+        var cutoff = 0.94 * rateRatio;
+        var halfWidth = Math.Max(16, (int)Math.Ceiling(16 / cutoff));
+        var filtered = new float[samples.Length];
+        for (var frame = 0; frame < frames; frame++)
+        {
+            var weightSum = 0d;
+            var first = Math.Max(-halfWidth, -frame);
+            var last = Math.Min(halfWidth, frames - 1 - frame);
+            for (var distance = first; distance <= last; distance++)
+            {
+                var x = cutoff * distance;
+                var sinc = Math.Abs(x) < 1e-12 ? 1d : Math.Sin(Math.PI * x) / (Math.PI * x);
+                var windowPosition = distance / (double)halfWidth;
+                var window = 0.42 + 0.5 * Math.Cos(Math.PI * windowPosition) + 0.08 * Math.Cos(2 * Math.PI * windowPosition);
+                var weight = cutoff * sinc * window;
+                weightSum += weight;
+                var sourceFrame = frame + distance;
+                for (var channel = 0; channel < channels; channel++)
+                    filtered[frame * channels + channel] += (float)(samples[sourceFrame * channels + channel] * weight);
+            }
+            if (Math.Abs(weightSum) > 1e-12)
+                for (var channel = 0; channel < channels; channel++)
+                    filtered[frame * channels + channel] /= (float)weightSum;
+        }
+        return filtered;
     }
 
     /// <summary>Mischt Kanäle nach unten oder dupliziert sie nach oben.</summary>

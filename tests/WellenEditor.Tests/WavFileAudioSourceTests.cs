@@ -48,6 +48,21 @@ public sealed class WavFileAudioSourceTests : IDisposable
         return path;
     }
 
+    private string CreateExtensiblePcm16Wav(Guid subFormat)
+    {
+        const int dataBytes = 8;
+        var path = Path.Combine(Path.GetTempPath(), $"wavsrc_ext_{Guid.NewGuid():N}.wav");
+        tempFiles.Add(path);
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var w = new BinaryWriter(fs, Encoding.ASCII);
+        w.Write(0x46464952); w.Write(4 + 8 + 40 + 8 + dataBytes); w.Write(0x45564157);
+        w.Write(0x20746D66); w.Write(40); w.Write(unchecked((short)0xFFFE));
+        w.Write((short)2); w.Write(48000); w.Write(192000); w.Write((short)4); w.Write((short)16);
+        w.Write((short)22); w.Write((short)16); w.Write(3); w.Write(subFormat.ToByteArray());
+        w.Write(0x61746164); w.Write(dataBytes); w.Write(new byte[dataBytes]);
+        return path;
+    }
+
     /// <summary>Erzeugt PCM16-Daten: Frame i, Kanal c = (i * channels + c) als int16.</summary>
     private static byte[] Pcm16Data(int frames, int channels)
     {
@@ -89,6 +104,19 @@ public sealed class WavFileAudioSourceTests : IDisposable
         src.Channels.Should().Be(1);
         src.BitsPerSample.Should().Be(32);
         src.FrameCount.Should().Be(5000L);
+    }
+
+    [Fact]
+    public void ExtensiblePcmRequiresAndReadsTheCompletePcmSubtypeGuid()
+    {
+        var path = CreateExtensiblePcm16Wav(new Guid("00000001-0000-0010-8000-00aa00389b71"));
+
+        using var source = new WavFileAudioSource(path);
+        var decoded = new float[4];
+
+        source.ReadFrames(0, decoded, 0, 2).Should().Be(2);
+        source.BitsPerSample.Should().Be(16);
+        decoded.Should().Equal(0f, 0f, 0f, 0f);
     }
 
     [Fact]

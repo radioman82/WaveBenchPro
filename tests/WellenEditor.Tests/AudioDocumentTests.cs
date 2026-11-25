@@ -27,6 +27,55 @@ public sealed class AudioDocumentTests
     }
 
     [Fact]
+    public void EmptySoloTrackDoesNotMuteMixdownAndSummingPreservesFloatHeadroom()
+    {
+        using var first = AudioDocument.FromSamples(new[] { .75f, .75f }, 1, 48000);
+        using var second = AudioDocument.FromSamples(new[] { .75f, .75f }, 1, 48000);
+        var project = new MultitrackProject();
+        project.Add(first);
+        project.Add(second);
+        project.AddEmptyTrack().Solo = true;
+
+        project.RenderMixdown().Should().Equal(1.5f, 1.5f, 1.5f, 1.5f);
+    }
+
+    [Theory]
+    [InlineData(16, false)]
+    [InlineData(24, false)]
+    [InlineData(32, true)]
+    public void SaveInSourceWaveFormatKeepsOriginalPcmDepthOrFloat(int bits, bool isFloat)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench_preserve_{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var source = AudioDocument.FromSamples(new[] { .25f, -.25f }, 1, 48000))
+                source.SaveAsWave(path, bits);
+            using var document = AudioDocument.Load(path);
+
+            document.SaveInSourceWaveFormat(path);
+
+            using var saved = new WavFileAudioSource(path);
+            saved.BitsPerSample.Should().Be(bits);
+            saved.IsIeeeFloat.Should().Be(isFloat);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void UndoRedoRetainsMoreThanTwentyEditsUsingDiskSnapshots()
+    {
+        using var document = AudioDocument.FromSamples(new[] { 0f }, 1, 48000);
+        var oneFrame = new AudioSelectionData(new[] { 1f }, 1, 48000);
+
+        for (var edit = 0; edit < 25; edit++) document.Insert(document.FrameCount, oneFrame);
+        document.FrameCount.Should().Be(26);
+        for (var undo = 0; undo < 25; undo++) document.Undo();
+        document.FrameCount.Should().Be(1);
+        for (var redo = 0; redo < 25; redo++) document.Redo();
+        document.FrameCount.Should().Be(26);
+    }
+
+    [Fact]
     public void LoopingWaveProviderRepeatsWithoutEndingAtClipBoundary()
     {
         var source = new ArrayWaveProvider(new[] { .25f, -.25f }, 0, 2, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));

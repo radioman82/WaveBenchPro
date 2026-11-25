@@ -8,11 +8,11 @@ namespace WellenEditor;
 
 public sealed class AudioDocument : IDisposable
 {
-    private const int MaxUndoSteps = 20;
     private const int WaveformPreviewFrames = 8192;
 
-    private readonly Stack<float[]> undoHistory = new();
-    private readonly Stack<float[]> redoHistory = new();
+    private sealed record AudioSnapshot(string Path);
+    private readonly Stack<AudioSnapshot> undoHistory = new();
+    private readonly Stack<AudioSnapshot> redoHistory = new();
     private float[] samples;
     private float[] waveformSamples;
     private string? streamingWavPath;
@@ -42,6 +42,8 @@ public sealed class AudioDocument : IDisposable
         waveformSamples = preview;
         streamingWavPath = sourcePath;
         streamingFrameCount = checked((int)source.FrameCount);
+        OriginalWaveBitsPerSample = source.BitsPerSample;
+        OriginalWaveIsIeeeFloat = source.IsIeeeFloat;
         streamingSegments = new List<AudioSourceSegment> { new(0, source.FrameCount) };
         Channels = source.Channels;
         SampleRate = source.SampleRate;
@@ -74,6 +76,8 @@ public sealed class AudioDocument : IDisposable
     public bool IsModified { get; private set; }
     public int Channels { get; }
     public int SampleRate { get; }
+    public int? OriginalWaveBitsPerSample { get; private set; }
+    public bool OriginalWaveIsIeeeFloat { get; private set; }
     public int FrameCount => IsStreaming ? streamingFrameCount : samples.Length / Channels;
     public TimeSpan Duration => TimeSpan.FromSeconds(FrameCount / (double)SampleRate);
     public bool CanUndo => IsStreaming ? streamingUndoHistory.Count > 0 : undoHistory.Count > 0;
@@ -249,10 +253,6 @@ public sealed class AudioDocument : IDisposable
     {
         streamingUndoHistory.Push(streamingSegments!.ToList());
         streamingRedoHistory.Clear();
-        if (streamingUndoHistory.Count <= MaxUndoSteps) return;
-        var retained = streamingUndoHistory.Take(MaxUndoSteps).Reverse().ToArray();
-        streamingUndoHistory.Clear();
-        foreach (var state in retained) streamingUndoHistory.Push(state);
     }
 
     private void ApplyStreamingEdit(List<AudioSourceSegment> segments)
@@ -296,6 +296,8 @@ public sealed class AudioDocument : IDisposable
         peakCacheCancellation?.Dispose();
         spectrogramCancellation?.Cancel();
         spectrogramCancellation?.Dispose();
+        ClearSnapshots(undoHistory);
+        ClearSnapshots(redoHistory);
     }
 
     public AudioSelectionData Extract(Selection selection)
@@ -374,8 +376,21 @@ public sealed class AudioDocument : IDisposable
             return;
         }
         if (!undoHistory.TryPop(out var restored)) return;
-        redoHistory.Push(Samples);
-        Samples = restored;
+        AudioSnapshot? current = null;
+        try
+        {
+            current = CreateSnapshot(Samples);
+            var restoredSamples = LoadSnapshot(restored);
+            redoHistory.Push(current);
+            Samples = restoredSamples;
+            current = null;
+        }
+        catch
+        {
+            if (current is not null) TryDeleteSnapshot(current);
+            undoHistory.Push(restored);
+            throw;
+        }
     }
 
     public void Redo()
@@ -390,8 +405,21 @@ public sealed class AudioDocument : IDisposable
             return;
         }
         if (!redoHistory.TryPop(out var restored)) return;
-        undoHistory.Push(Samples);
-        Samples = restored;
+        AudioSnapshot? current = null;
+        try
+        {
+            current = CreateSnapshot(Samples);
+            var restoredSamples = LoadSnapshot(restored);
+            undoHistory.Push(current);
+            Samples = restoredSamples;
+            current = null;
+        }
+        catch
+        {
+            if (current is not null) TryDeleteSnapshot(current);
+            redoHistory.Push(restored);
+            throw;
+        }
     }
 
     public void Normalize(Selection? selection)
@@ -465,6 +493,15 @@ public sealed class AudioDocument : IDisposable
     }
 
     public void SaveAsWave(string path) => SaveAsWave(path, 32);
+
+    /// <summary>Saves a WAV in its original bit depth when that depth is supported.</summary>
+    public void SaveInSourceWaveFormat(string path)
+    {
+        var bits = OriginalWaveBitsPerSample is 16 or 24 or 32 ? OriginalWaveBitsPerSample.Value : 32;
+        SaveAsWave(path, bits);
+        OriginalWaveBitsPerSample = bits;
+        OriginalWaveIsIeeeFloat = bits == 32;
+    }
 
     public void SaveAsWave(string path, int bitsPerSample)
     {
@@ -753,6 +790,12 @@ public sealed class AudioDocument : IDisposable
         }
         SourcePath = path;
         DisplayName = Path.GetFileName(path);
+        if (Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase) && File.Exists(path))
+        {
+            using var savedWave = new WavFileAudioSource(path);
+            OriginalWaveBitsPerSample = savedWave.BitsPerSample;
+            OriginalWaveIsIeeeFloat = savedWave.IsIeeeFloat;
+        }
         IsModified = false;
     }
 
@@ -761,14 +804,50 @@ public sealed class AudioDocument : IDisposable
 
     private void SaveUndo()
     {
+        var snapshot = CreateSnapshot(Samples);
+        undoHistory.Push(snapshot);
+        ClearSnapshots(redoHistory);
         IsModified = true;
         InvalidateSpectrogram();
-        undoHistory.Push((float[])Samples.Clone());
-        redoHistory.Clear();
-        if (undoHistory.Count <= MaxUndoSteps) return;
-        var retained = undoHistory.Take(MaxUndoSteps).Reverse().ToArray();
-        undoHistory.Clear();
-        foreach (var state in retained) undoHistory.Push(state);
+    }
+
+    private static AudioSnapshot CreateSnapshot(float[] audio)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Undo_{Guid.NewGuid():N}.bin");
+        try
+        {
+            using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan);
+            stream.Write(MemoryMarshal.AsBytes(audio.AsSpan()));
+            return new AudioSnapshot(path);
+        }
+        catch
+        {
+            try { File.Delete(path); } catch { }
+            throw;
+        }
+    }
+
+    private static float[] LoadSnapshot(AudioSnapshot snapshot)
+    {
+        using var stream = new FileStream(snapshot.Path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+        if (stream.Length % sizeof(float) != 0 || stream.Length / sizeof(float) > int.MaxValue)
+            throw new InvalidDataException("Der Undo-Zwischenspeicher ist beschädigt oder größer als ein .NET-Samplepuffer.");
+        var restored = new float[(int)(stream.Length / sizeof(float))];
+        stream.ReadExactly(MemoryMarshal.AsBytes(restored.AsSpan()));
+        stream.Dispose();
+        File.Delete(snapshot.Path);
+        return restored;
+    }
+
+    private static void ClearSnapshots(Stack<AudioSnapshot> snapshots)
+    {
+        while (snapshots.TryPop(out var snapshot))
+            TryDeleteSnapshot(snapshot);
+    }
+
+    private static void TryDeleteSnapshot(AudioSnapshot snapshot)
+    {
+        try { File.Delete(snapshot.Path); } catch { /* temporäre Undo-Datei später bereinigen */ }
     }
 
     private void InvalidateSpectrogram()

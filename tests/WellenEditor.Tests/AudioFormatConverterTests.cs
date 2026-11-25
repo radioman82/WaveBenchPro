@@ -54,13 +54,39 @@ public sealed class AudioFormatConverterTests
     [Fact]
     public void ResampleScalesFrameCountAndKeepsChannelsSeparate()
     {
-        var samples = new[] { 0f, 1f, 0f, -1f, 0f, 1f, 0f, -1f };
+        var samples = new[] { .25f, .5f, .25f, .5f, .25f, .5f, .25f, .5f };
 
         var result = AudioFormatConverter.Resample(samples, 2, 44100, 22050);
 
         result.Should().HaveCount(4);
-        result[0].Should().BeApproximately(0f, 1e-6f);
-        result[1].Should().BeApproximately(1f, 1e-6f);
+        result[0].Should().BeApproximately(.25f, 1e-6f);
+        result[1].Should().BeApproximately(.5f, 1e-6f);
+    }
+
+    [Fact]
+    public void ResampleOneSecondFrom44100To48000DoesNotOverflowIntegerProducts()
+    {
+        var samples = Enumerable.Repeat(0.25f, 44_100).ToArray();
+
+        var result = AudioFormatConverter.Resample(samples, 1, 44_100, 48_000);
+
+        result.Should().HaveCount(48_000);
+        result[24_000].Should().BeApproximately(0.25f, 1e-6f);
+    }
+
+    [Fact]
+    public void DownsamplingSuppressesFrequenciesAboveTheNewNyquistLimit()
+    {
+        const int sourceRate = 48_000;
+        var tone = Enumerable.Range(0, sourceRate)
+            .Select(frame => MathF.Sin(2 * MathF.PI * 18_000 * frame / sourceRate))
+            .ToArray();
+
+        var result = AudioFormatConverter.Resample(tone, 1, sourceRate, 16_000);
+        var stable = result.Skip(100).Take(result.Length - 200);
+        var rms = Math.Sqrt(stable.Average(sample => (double)sample * sample));
+
+        rms.Should().BeLessThan(0.02);
     }
 
     [Fact]

@@ -11,11 +11,13 @@ namespace WellenEditor;
 /// </summary>
 public sealed class RecordingEngine : IDisposable
 {
-    private readonly MemoryStream recorded = new();
     private readonly ManualResetEventSlim stopped = new(false);
     private WasapiCapture? capture;
+    private WaveFileWriter? recorded;
+    private string? recordingPath;
     private WaveFormat? format;
     private bool isRecording;
+    private Exception? recordingError;
 
     public bool IsRecording => isRecording;
     public WaveFormat? CaptureFormat => format;
@@ -34,14 +36,24 @@ public sealed class RecordingEngine : IDisposable
 
         capture = new WasapiCapture(device);
         format = capture.WaveFormat;
-        recorded.SetLength(0);
-        recorded.Position = 0;
         stopped.Reset();
+        recordingError = null;
         LastPeak = 0f;
-        capture.DataAvailable += OnDataAvailable;
-        capture.RecordingStopped += OnRecordingStopped;
-        capture.StartRecording();
-        isRecording = true;
+        try
+        {
+            recordingPath = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Recording_{Guid.NewGuid():N}.wav");
+            recorded = new WaveFileWriter(recordingPath, format);
+            capture.DataAvailable += OnDataAvailable;
+            capture.RecordingStopped += OnRecordingStopped;
+            capture.StartRecording();
+            isRecording = true;
+        }
+        catch
+        {
+            ReleaseCapture();
+            DiscardRecordingFile();
+            throw;
+        }
     }
 
     /// <summary>Beendet die Aufnahme und gibt die aufgezeichneten Samples zurück.</summary>
@@ -52,15 +64,43 @@ public sealed class RecordingEngine : IDisposable
         capture?.StopRecording();
         if (!stopped.Wait(TimeSpan.FromSeconds(3)))
         {
-            // Einige Treiber melden RecordingStopped nicht zuverlässig.
-            // Die bereits angekommenen Blöcke sind trotzdem gültig.
+            ReleaseCapture();
+            DiscardRecordingFile();
+            throw new TimeoutException("Das Audiogerät hat das Ende der Aufnahme nicht innerhalb von drei Sekunden bestätigt. Die unvollständige Aufnahme wurde verworfen.");
         }
         ReleaseCapture();
 
-        var bytes = recorded.ToArray();
-        if (bytes.Length == 0 || format is null) return null;
-        var samples = AudioFormatConverter.Decode(bytes, bytes.Length, format);
-        return samples.Length == 0 ? null : new AudioSelectionData(samples, format.Channels, format.SampleRate);
+        if (recordingError is { } error)
+        {
+            DiscardRecordingFile();
+            throw new InvalidOperationException("Die Audioaufnahme wurde vom Audiogerät oder Treiber abgebrochen.", error);
+        }
+
+        recorded?.Dispose();
+        recorded = null;
+        if (recordingPath is null || format is null) return null;
+        try
+        {
+            using var reader = new WaveFileReader(recordingPath);
+            var channels = reader.WaveFormat.Channels;
+            var frameCount = reader.Length / reader.WaveFormat.BlockAlign;
+            var sampleCount = checked((int)(frameCount * channels));
+            var samples = new float[sampleCount];
+            var blockAlign = reader.WaveFormat.BlockAlign;
+            var bytes = new byte[Math.Max(blockAlign, 64 * 1024 / blockAlign * blockAlign)];
+            var written = 0;
+            while (true)
+            {
+                var count = reader.Read(bytes, 0, bytes.Length);
+                if (count == 0) break;
+                var decoded = AudioFormatConverter.Decode(bytes, count, reader.WaveFormat);
+                Array.Copy(decoded, 0, samples, written, decoded.Length);
+                written += decoded.Length;
+            }
+            if (written != samples.Length) throw new EndOfStreamException("Die temporäre Aufnahme-WAV war unvollständig.");
+            return samples.Length == 0 ? null : new AudioSelectionData(samples, channels, reader.WaveFormat.SampleRate);
+        }
+        finally { DiscardRecordingFile(); }
     }
 
     /// <summary>Verwirft die laufende Aufnahme ohne Samples zurückzugeben.</summary>
@@ -71,13 +111,13 @@ public sealed class RecordingEngine : IDisposable
         capture?.StopRecording();
         stopped.Wait(TimeSpan.FromSeconds(3));
         ReleaseCapture();
-        recorded.SetLength(0);
+        DiscardRecordingFile();
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
         if (e.BytesRecorded <= 0 || format is null) return;
-        recorded.Write(e.Buffer, 0, e.BytesRecorded);
+        recorded?.Write(e.Buffer, 0, e.BytesRecorded);
 
         var block = AudioFormatConverter.Decode(e.Buffer, e.BytesRecorded, format);
         var channels = Math.Max(1, format.Channels);
@@ -91,7 +131,11 @@ public sealed class RecordingEngine : IDisposable
         LevelsChanged?.Invoke(this, peaks);
     }
 
-    private void OnRecordingStopped(object? sender, StoppedEventArgs e) => stopped.Set();
+    private void OnRecordingStopped(object? sender, StoppedEventArgs e)
+    {
+        recordingError = e.Exception;
+        stopped.Set();
+    }
 
     private void ReleaseCapture()
     {
@@ -103,11 +147,21 @@ public sealed class RecordingEngine : IDisposable
         capture = null;
     }
 
+    private void DiscardRecordingFile()
+    {
+        recorded?.Dispose();
+        recorded = null;
+        var path = recordingPath;
+        recordingPath = null;
+        if (path is null) return;
+        try { File.Delete(path); } catch { /* temporäre Datei beim nächsten Start nicht mehr verwenden */ }
+    }
+
     public void Dispose()
     {
         if (isRecording) Cancel();
         ReleaseCapture();
-        recorded.Dispose();
+        DiscardRecordingFile();
         stopped.Dispose();
     }
 }

@@ -42,6 +42,8 @@ public partial class MainWindow : Window
     private long loopStartFrame;
     private long loopFrameCount;
     private readonly RecordingEngine recorder = new();
+    private AudioDocument? recordingTargetDocument;
+    private int recordingTargetFrame;
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
     private bool isScanningVst;
     private readonly MultitrackProject multitrack = new();
@@ -307,7 +309,10 @@ public partial class MainWindow : Window
             multitrackPlaybackDocument = AudioDocument.FromSamples(new float[2], 2, multitrack.SampleRate);
             loopSelection = false; // Multitrack mixer wraps internally and accepts live range updates.
             StartPlayback(start, count, multitrackPlaybackDocument, provider);
-            HintText.Content = loopPlaybackEnabled ? "Mehrspur-Schleife läuft." : "Mehrspurprojekt wird gemeinsam wiedergegeben.";
+            var status = loopPlaybackEnabled ? "Mehrspur-Schleife läuft." : "Mehrspurprojekt wird gemeinsam wiedergegeben.";
+            HintText.Content = provider.PreparationWarnings.Count == 0
+                ? status
+                : $"{status} Hinweis: {string.Join(" | ", provider.PreparationWarnings)}";
         }
         catch (Exception exception)
         {
@@ -543,6 +548,11 @@ public partial class MainWindow : Window
 
     private bool RequestCloseDocument(AudioDocument documentToClose)
     {
+        if (recorder.IsRecording && ReferenceEquals(documentToClose, recordingTargetDocument))
+        {
+            HintText.Content = "Das Aufnahme-Zieldokument kann erst nach dem Stoppen der Aufnahme geschlossen werden.";
+            return false;
+        }
         var prompt = ShowSavePrompt(documentToClose.DisplayName);
         if (prompt == SavePromptResult.Cancel) return false;
         if (prompt == SavePromptResult.Save)
@@ -609,7 +619,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                document.SaveAsWave(document.SourcePath, 32);
+                document.SaveInSourceWaveFormat(document.SourcePath);
                 document.MarkSaved();
                 RefreshFileList();
                 HintText.Content = $"Datei gespeichert: {document.SourcePath}";
@@ -742,6 +752,7 @@ public partial class MainWindow : Window
     {
         Dispatcher.Invoke(() =>
         {
+            if (!ReferenceEquals(sender, player)) return;
             if (e.Exception is not null)
             {
                 StopPlayback();
@@ -800,7 +811,10 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                if (document is null)
+                var targetDocument = recordingTargetDocument;
+                var insertAt = recordingTargetFrame;
+                recordingTargetDocument = null;
+                if (targetDocument is null)
                 {
                     var recordedDocument = AudioDocument.FromSamples(recorded.Samples, recorded.Channels, recorded.SampleRate);
                     recordedDocument.DisplayName = $"Aufnahme {nextUntitledNumber++}";
@@ -811,10 +825,14 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    var insertAt = Waveform.CursorSample;
                     StopPlayback();
-                    document.Insert(insertAt, recorded);
-                    RefreshAfterEdit(insertAt + recorded.Samples.Length / recorded.Channels);
+                    if (!openDocuments.Contains(targetDocument))
+                        throw new InvalidOperationException("Das Zieldokument wurde während der Aufnahme geschlossen. Die Aufnahme wurde nicht eingefügt.");
+                    ActivateDocument(targetDocument);
+                    var oldFrameCount = targetDocument.FrameCount;
+                    targetDocument.Insert(insertAt, recorded);
+                    var insertedFrames = targetDocument.FrameCount - oldFrameCount;
+                    RefreshAfterEdit((int)Math.Clamp((long)insertAt + insertedFrames, 0, targetDocument.FrameCount));
                     RefreshFileList();
                     HintText.Content = $"Aufnahme an Position {insertAt:N0} eingefügt.";
                 }
@@ -826,6 +844,8 @@ public partial class MainWindow : Window
             }
 
             StopPlayback();
+            recordingTargetDocument = document;
+            recordingTargetFrame = document is null ? 0 : Waveform.CursorSample;
             recorder.LevelsChanged += Recorder_LevelChanged;
             recorder.Start(AudioHardwareSettings.InputDeviceId);
             RecordButton.Content = "■";
@@ -835,6 +855,7 @@ public partial class MainWindow : Window
         catch (Exception exception)
         {
             recorder.Cancel();
+            recordingTargetDocument = null;
             recorder.LevelsChanged -= Recorder_LevelChanged;
             RecordButton.Content = "●";
             ResetLevel();
