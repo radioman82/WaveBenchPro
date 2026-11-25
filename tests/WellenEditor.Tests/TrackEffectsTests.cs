@@ -97,6 +97,25 @@ public sealed class TrackEffectsTests
     }
 
     [Fact]
+    public void DisabledVstIsBypassedWithoutCallingTheRenderer()
+    {
+        using var sound = AudioDocument.FromSamples(new[] { .1f, .2f }, 1, 1000);
+        var project = new MultitrackProject();
+        project.Add(sound);
+        project.Tracks[0].SetEffects(new[] { TrackEffectSlot.ForVst(FakeVst()) with { Enabled = false } });
+        var rendererCalled = false;
+
+        var mix = project.RenderMixdown((_, _, _) =>
+        {
+            rendererCalled = true;
+            return Array.Empty<float>();
+        });
+
+        Assert.False(rendererCalled);
+        Assert.Equal(new[] { .1f, .1f, .2f, .2f }, mix);
+    }
+
+    [Fact]
     public void FarPositionedClipIsRejectedBeforeMixdownAllocationOrVstRender()
     {
         using var sound = AudioDocument.FromSamples(new[] { .1f }, 1, 1000);
