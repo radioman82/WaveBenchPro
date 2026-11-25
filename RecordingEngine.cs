@@ -1,6 +1,10 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
+using System.Buffers;
+using System.Collections.Concurrent;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WellenEditor;
 
@@ -11,6 +15,19 @@ internal interface IRecordingCapture : IDisposable
     event EventHandler<StoppedEventArgs>? RecordingStopped;
     void StartRecording();
     void StopRecording();
+}
+
+internal interface IRecordingSink : IDisposable
+{
+    void Write(byte[] buffer, int offset, int count);
+}
+
+internal sealed class WaveFileRecordingSink : IRecordingSink
+{
+    private readonly WaveFileWriter writer;
+    public WaveFileRecordingSink(string path, WaveFormat format) => writer = new WaveFileWriter(path, format);
+    public void Write(byte[] buffer, int offset, int count) => writer.Write(buffer, offset, count);
+    public void Dispose() => writer.Dispose();
 }
 
 internal sealed class WasapiCaptureAdapter : IRecordingCapture
@@ -35,11 +52,13 @@ internal sealed class WasapiCaptureAdapter : IRecordingCapture
 
 /// <summary>
 /// Nimmt über WASAPI vom gewählten Eingabegerät auf und liefert beim Stoppen
-/// ein formatfestes AudioSelectionData. Das Pegel-Event kommt vom Capture-Thread;
+/// ein formatfestes AudioSelectionData. Capture-Daten werden non-blocking in eine begrenzte Queue kopiert;
 /// UI-Abonnenten müssen selbst auf den Dispatcher marshallen.
 /// </summary>
 public sealed class RecordingEngine : IDisposable
 {
+    private readonly record struct CaptureBlock(byte[] Buffer, int BytesRecorded);
+    private const int CaptureQueueCapacity = 8;
     private readonly ManualResetEventSlim stopped = new(false);
     private readonly object writerGate = new();
     private readonly Func<string?, IRecordingCapture> captureFactory;
@@ -47,12 +66,15 @@ public sealed class RecordingEngine : IDisposable
     private readonly string recoveryDirectory;
     private readonly TimeSpan stopTimeout;
     private IRecordingCapture? capture;
-    private WaveFileWriter? recorded;
+    private IRecordingSink? recorded;
+    private BlockingCollection<CaptureBlock>? captureQueue;
+    private Task? captureWriterTask;
     private string? recordingPath;
     private WaveFormat? format;
     private bool isRecording;
     private Exception? recordingError;
-    private bool acceptingCaptureData;
+    private int acceptingCaptureData;
+    private readonly Func<string, WaveFormat, IRecordingSink> sinkFactory;
 
     public bool IsRecording => isRecording;
     public WaveFormat? CaptureFormat => format;
@@ -60,14 +82,15 @@ public sealed class RecordingEngine : IDisposable
     public event EventHandler<float[]>? LevelsChanged;
 
     public RecordingEngine()
-        : this(CreateCapture, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "WaveBenchPro", "Recovered"), length => new float[length], TimeSpan.FromSeconds(3)) { }
+        : this(CreateCapture, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "WaveBenchPro", "Recovered"), length => new float[length], TimeSpan.FromSeconds(3), (path, waveFormat) => new WaveFileRecordingSink(path, waveFormat)) { }
 
-    internal RecordingEngine(Func<string?, IRecordingCapture> captureFactory, string recoveryDirectory, Func<int, float[]> sampleAllocator, TimeSpan? stopTimeout = null)
+    internal RecordingEngine(Func<string?, IRecordingCapture> captureFactory, string recoveryDirectory, Func<int, float[]> sampleAllocator, TimeSpan? stopTimeout = null, Func<string, WaveFormat, IRecordingSink>? sinkFactory = null)
     {
         this.captureFactory = captureFactory ?? throw new ArgumentNullException(nameof(captureFactory));
         this.recoveryDirectory = recoveryDirectory ?? throw new ArgumentNullException(nameof(recoveryDirectory));
         this.sampleAllocator = sampleAllocator ?? throw new ArgumentNullException(nameof(sampleAllocator));
         this.stopTimeout = stopTimeout ?? TimeSpan.FromSeconds(3);
+        this.sinkFactory = sinkFactory ?? ((path, waveFormat) => new WaveFileRecordingSink(path, waveFormat));
     }
 
     private static IRecordingCapture CreateCapture(string? deviceId)
@@ -92,8 +115,10 @@ public sealed class RecordingEngine : IDisposable
         try
         {
             recordingPath = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Recording_{Guid.NewGuid():N}.wav");
-            recorded = new WaveFileWriter(recordingPath, format);
-            acceptingCaptureData = true;
+            recorded = sinkFactory(recordingPath, format);
+            captureQueue = new BlockingCollection<CaptureBlock>(CaptureQueueCapacity);
+            Volatile.Write(ref acceptingCaptureData, 1);
+            captureWriterTask = Task.Run(DrainCaptureQueue);
             capture.DataAvailable += OnDataAvailable;
             capture.RecordingStopped += OnRecordingStopped;
             capture.StartRecording();
@@ -115,7 +140,7 @@ public sealed class RecordingEngine : IDisposable
         try { capture?.StopRecording(); }
         catch (Exception exception)
         {
-            recordingError = exception;
+            SetRecordingError(exception);
             ReleaseCapture();
             var recoveryPath = PreserveRecordingFile();
             throw new InvalidOperationException($"Das Audiogerät konnte nicht sauber gestoppt werden. Die bisherige Aufnahme wurde gesichert unter: {recoveryPath}", exception);
@@ -179,45 +204,72 @@ public sealed class RecordingEngine : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (e.BytesRecorded <= 0 || format is null) return;
+        if (e.BytesRecorded <= 0 || format is null || Volatile.Read(ref acceptingCaptureData) == 0) return;
+        byte[]? rented = null;
         try
         {
-            lock (writerGate)
+            rented = ArrayPool<byte>.Shared.Rent(e.BytesRecorded);
+            Buffer.BlockCopy(e.Buffer, 0, rented, 0, e.BytesRecorded);
+            var queue = captureQueue;
+            if (Volatile.Read(ref acceptingCaptureData) == 0 || queue is null || !queue.TryAdd(new CaptureBlock(rented, e.BytesRecorded)))
             {
-                if (!acceptingCaptureData) return;
-                recorded?.Write(e.Buffer, 0, e.BytesRecorded);
+                ArrayPool<byte>.Shared.Return(rented);
+                rented = null;
+                SetRecordingError(new IOException("Der Aufnahme-Puffer ist voll; die Aufnahme wurde angehalten und die bisherige WAV wird gesichert."));
+                Volatile.Write(ref acceptingCaptureData, 0);
+                try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
+                return;
             }
         }
         catch (Exception exception)
         {
-            recordingError = exception;
+            if (rented is not null) ArrayPool<byte>.Shared.Return(rented);
+            SetRecordingError(new IOException("Der Aufnahmeblock konnte nicht sicher in die Pufferwarteschlange übernommen werden.", exception));
+            Volatile.Write(ref acceptingCaptureData, 0);
             try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
             return;
         }
+    }
 
-        float[] block;
-        try { block = AudioFormatConverter.Decode(e.Buffer, e.BytesRecorded, format); }
-        catch (Exception exception)
+    private void DrainCaptureQueue()
+    {
+        var queue = captureQueue;
+        if (queue is null) return;
+        foreach (var item in queue.GetConsumingEnumerable())
         {
-            recordingError = exception;
-            try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
-            return;
+            try
+            {
+                recorded?.Write(item.Buffer, 0, item.BytesRecorded);
+                var currentFormat = format;
+                if (currentFormat is not null)
+                {
+                    var block = AudioFormatConverter.Decode(item.Buffer, item.BytesRecorded, currentFormat);
+                    var channels = Math.Max(1, currentFormat.Channels);
+                    var peaks = new float[channels];
+                    for (var sample = 0; sample < block.Length; sample++)
+                    {
+                        var channel = sample % channels;
+                        peaks[channel] = Math.Max(peaks[channel], Math.Abs(block[sample]));
+                    }
+                    LastPeak = peaks.Max();
+                    LevelsChanged?.Invoke(this, peaks);
+                }
+            }
+            catch (Exception exception)
+            {
+                SetRecordingError(exception);
+                Volatile.Write(ref acceptingCaptureData, 0);
+                try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
+            }
+            finally { ArrayPool<byte>.Shared.Return(item.Buffer); }
         }
-        var channels = Math.Max(1, format.Channels);
-        var peaks = new float[channels];
-        for (var sample = 0; sample < block.Length; sample++)
-        {
-            var channel = sample % channels;
-            peaks[channel] = Math.Max(peaks[channel], Math.Abs(block[sample]));
-        }
-        LastPeak = peaks.Length > 0 ? peaks.Max() : 0f;
-        LevelsChanged?.Invoke(this, peaks);
     }
 
     private void OnRecordingStopped(object? sender, StoppedEventArgs e)
     {
-        if (e.Exception is not null) recordingError = e.Exception;
-        lock (writerGate) acceptingCaptureData = false;
+        if (e.Exception is not null) SetRecordingError(e.Exception);
+        Volatile.Write(ref acceptingCaptureData, 0);
+        CompleteCaptureQueue();
         stopped.Set();
     }
 
@@ -244,12 +296,27 @@ public sealed class RecordingEngine : IDisposable
     {
         lock (writerGate)
         {
-            acceptingCaptureData = false;
+            Volatile.Write(ref acceptingCaptureData, 0);
+            CompleteCaptureQueue();
+            try { captureWriterTask?.GetAwaiter().GetResult(); }
+            catch (Exception exception) { SetRecordingError(exception); }
+            captureWriterTask = null;
             try { recorded?.Dispose(); }
-            catch (Exception exception) { recordingError ??= exception; }
+            catch (Exception exception) { SetRecordingError(exception); }
             recorded = null;
+            captureQueue?.Dispose();
+            captureQueue = null;
         }
     }
+
+    private void CompleteCaptureQueue()
+    {
+        var queue = captureQueue;
+        if (queue is null || queue.IsAddingCompleted) return;
+        try { queue.CompleteAdding(); } catch (InvalidOperationException) { }
+    }
+
+    private void SetRecordingError(Exception exception) => Interlocked.CompareExchange(ref recordingError, exception, null);
 
     private string PreserveRecordingFile()
     {

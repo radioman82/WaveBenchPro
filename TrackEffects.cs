@@ -1,3 +1,6 @@
+using System.IO;
+using System.Threading;
+
 namespace WellenEditor;
 
 internal sealed record TrackEffectSlot(Guid Id, NativeEffectKind Kind, EffectSettings Settings, bool Enabled = true, Vst3EffectDescriptor? Vst = null, byte[]? VstState = null)
@@ -82,7 +85,9 @@ internal static class TrackEffectChainRenderer
         IReadOnlyList<TrackEffectSlot> effects,
         int sampleRate,
         Action<string> reportWarning,
-        VstRenderer? vstRenderer = null)
+        VstRenderer? vstRenderer = null,
+        bool failOnVstError = false,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(input);
         ArgumentNullException.ThrowIfNull(effects);
@@ -92,15 +97,20 @@ internal static class TrackEffectChainRenderer
         var result = input;
         foreach (var effect in effects)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!effect.Enabled) continue;
             if (effect.Vst is not null)
             {
                 try
                 {
-                    var render = vstRenderer ?? RenderVst;
-                    var processed = render(effect, result, sampleRate);
+                    var processed = vstRenderer is null
+                        ? RenderVst(effect, result, sampleRate, cancellationToken)
+                        : vstRenderer(effect, result, sampleRate);
+                    cancellationToken.ThrowIfCancellationRequested();
                     if (processed.Length != result.Length)
                     {
+                        if (failOnVstError)
+                            throw new InvalidDataException($"VST3-Effekt '{effect.Vst.DisplayName}' lieferte eine unerwartete Ausgabelänge.");
                         reportWarning($"VST3-Effekt '{effect.Vst.DisplayName}' lieferte eine unerwartete Ausgabelänge; Effekt wurde übersprungen.");
                         continue;
                     }
@@ -108,6 +118,7 @@ internal static class TrackEffectChainRenderer
                 }
                 catch (Exception exception)
                 {
+                    if (failOnVstError) throw new InvalidOperationException($"VST3-Effekt '{effect.Vst.DisplayName}' konnte nicht angewendet werden.", exception);
                     reportWarning($"VST3-Effekt '{effect.Vst.DisplayName}' konnte nicht angewendet werden ({exception.Message}); Effekt wurde übersprungen.");
                 }
                 continue;
@@ -119,9 +130,9 @@ internal static class TrackEffectChainRenderer
         return result;
     }
 
-    private static float[] RenderVst(TrackEffectSlot effect, float[] input, int sampleRate)
+    private static float[] RenderVst(TrackEffectSlot effect, float[] input, int sampleRate, CancellationToken cancellationToken)
     {
         var provider = new ArraySampleProvider(input, NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 2));
-        return Vst3OfflineRenderer.Render(effect.Vst!, provider, sampleRate, 2, input.Length / 2, effect.VstState);
+        return Vst3OfflineRenderer.Render(effect.Vst!, provider, sampleRate, 2, input.Length / 2, effect.VstState, cancellationToken);
     }
 }

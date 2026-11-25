@@ -6,6 +6,7 @@ namespace WellenEditor;
 /// </summary>
 public sealed class MultitrackProject
 {
+    private const long MaxMixdownBytes = 256L * 1024 * 1024;
     private readonly List<MultitrackTrack> tracks = new();
     private int nextTrackNumber = 1;
 
@@ -74,8 +75,10 @@ public sealed class MultitrackProject
         var audible = tracks.Where(track => track.HasClip && !track.Muted && (!solo || track.Solo)).ToArray();
         if (audible.Length == 0) throw new InvalidOperationException("Keine hörbare Spur vorhanden.");
         var frames = audible.Max(track => track.EndFrame);
+        if (frames < 0 || frames > Array.MaxLength / 2 || checked(frames * sizeof(float) * 2) > MaxMixdownBytes)
+            throw new NotSupportedException("Der Mixdown überschreitet das Speicherlimit von 256 MiB für einen einzelnen Samplepuffer.");
+        var provider = new MultitrackWaveProvider(this, vstRenderer, failOnVstPreparationError: true);
         var result = new float[checked((int)(frames * 2))];
-        var provider = new MultitrackWaveProvider(this, vstRenderer);
         provider.Read(System.Runtime.InteropServices.MemoryMarshal.AsBytes(result.AsSpan()));
         return result;
     }
@@ -118,7 +121,7 @@ public sealed class MultitrackTrack
     internal TrackEffectSlot[] Effects => Volatile.Read(ref effects);
     internal void SetEffects(IEnumerable<TrackEffectSlot> value) => Volatile.Write(ref effects, value.ToArray());
     public bool HasClip => Clips.Count > 0;
-    public long EndFrame => Clips.Count == 0 ? 0 : Clips.Max(clip => clip.StartFrame + (long)Math.Ceiling(clip.Source.FrameCount * clip.DurationScale * ProjectSampleRate / clip.Source.SampleRate));
+    public long EndFrame => Clips.Count == 0 ? 0 : Clips.Max(clip => checked(clip.StartFrame + (long)Math.Ceiling(clip.Source.FrameCount * clip.DurationScale * ProjectSampleRate / clip.Source.SampleRate)));
     public string StartText => TimeSpan.FromSeconds(StartFrame / (double)Math.Max(1, ProjectSampleRate)).ToString(@"m\:ss\.fff");
     public double ClipLeft { get; private set; }
     public double ClipWidth { get; private set; } = 36;

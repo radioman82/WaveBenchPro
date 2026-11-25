@@ -482,6 +482,34 @@ public sealed class AudioDocumentTests
     }
 
     [Fact]
+    public void SaveRangeAsWaveCannotReplaceItsOpenSourceFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebenchrange_inplace_{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)))
+                writer.WriteSamples(new[] { .1f, .2f, .3f, .4f, .5f }, 0, 5);
+            using var document = AudioDocument.Load(path);
+            var original = ReadWaveSamples(path);
+
+            var action = () => document.SaveRangeAsWave(path, 1, 3, 32);
+
+            action.Should().Throw<InvalidOperationException>().WithMessage("*anderen Dateinamen*");
+            ReadWaveSamples(path).Should().Equal(original);
+            document.FrameCount.Should().Be(5);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    private static float[] ReadWaveSamples(string path)
+    {
+        using var reader = new AudioFileReader(path);
+        var samples = new float[reader.Length / sizeof(float)];
+        var read = reader.Read(samples.AsSpan());
+        return samples.AsSpan(0, read).ToArray();
+    }
+
+    [Fact]
     public void SaveRangeAsWaveRejectsRangeBeyondDocument()
     {
         var document = CreateDocument();

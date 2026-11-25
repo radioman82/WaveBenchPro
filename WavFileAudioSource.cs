@@ -58,7 +58,9 @@ public sealed class WavFileAudioSource : IAudioSource
     {
         var reader = new BinaryReader(stream, Encoding.ASCII, leaveOpen: true);
 
-        if (reader.ReadUInt32() != 0x46464952) throw new InvalidDataException("Keine RIFF-Datei: 'RIFF'-Kennung fehlt.");
+        var containerId = reader.ReadUInt32();
+        if (containerId == 0x34364652) throw new NotSupportedException("RF64-WAV wird derzeit nicht unterstützt; die Quelldatei wurde nicht verändert.");
+        if (containerId != 0x46464952) throw new InvalidDataException("Keine RIFF-Datei: 'RIFF'-Kennung fehlt.");
         var riffSize = reader.ReadUInt32();
         if (reader.ReadUInt32() != 0x45564157) throw new InvalidDataException("Keine WAVE-Datei: 'WAVE'-Kennung fehlt.");
         var riffEnd = Math.Min(checked((long)riffSize + 8), stream.Length);
@@ -127,6 +129,8 @@ public sealed class WavFileAudioSource : IAudioSource
         if (blockAlignLocal != checked(channels * bits / 8))
             throw new InvalidDataException($"Ungültiges blockAlign {blockAlignLocal} (erwartet {channels * bits / 8}).");
         if (dataLength < 0) throw new InvalidDataException("WAV enthält keinen data-Chunk.");
+        if (dataLength % blockAlignLocal != 0)
+            throw new InvalidDataException("WAV-data-Chunk endet mitten in einem Audioframe.");
 
         formatTag = fmtTag;
         Channels = channels;
@@ -174,6 +178,14 @@ public sealed class WavFileAudioSource : IAudioSource
 
                 BytesReadFromDisk += chunkBytes;
                 Decode(decodeBuffer, chunkBytes, buffer, (bufferOffsetFrames + framesRead) * Channels, chunkFrames);
+                if (formatTag == FormatIeeeFloat)
+                {
+                    var sampleStart = (bufferOffsetFrames + framesRead) * Channels;
+                    var sampleEnd = sampleStart + chunkFrames * Channels;
+                    for (var sample = sampleStart; sample < sampleEnd; sample++)
+                        if (!float.IsFinite(buffer[sample]))
+                            throw new InvalidDataException($"WAV enthält einen NaN- oder unendlichen Float-Samplewert bei Frame {startFrame + framesRead + (sample - sampleStart) / Channels}.");
+                }
                 framesRead += chunkFrames;
             }
             return framesRead;

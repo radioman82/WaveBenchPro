@@ -600,6 +600,8 @@ public sealed class AudioDocument : IDisposable
     public void SaveRangeAsWave(string path, int startFrame, int frameCount, int bitsPerSample)
     {
         ValidateRange(startFrame, frameCount);
+        if (!string.IsNullOrWhiteSpace(SourcePath) && string.Equals(Path.GetFullPath(path), Path.GetFullPath(SourcePath), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Die Auswahl kann nicht über die Quelldatei gespeichert werden. Wählen Sie einen anderen Dateinamen.");
         if (IsStreaming)
         {
             SaveStreamingWave(path, startFrame, frameCount, bitsPerSample);
@@ -786,7 +788,7 @@ public sealed class AudioDocument : IDisposable
     private void ValidateRange(int startFrame, int frameCount)
     {
         if (startFrame < 0) throw new ArgumentOutOfRangeException(nameof(startFrame));
-        if (frameCount < 0 || startFrame + frameCount > FrameCount) throw new ArgumentOutOfRangeException(nameof(frameCount));
+        if (frameCount < 0 || startFrame > FrameCount || frameCount > FrameCount - startFrame) throw new ArgumentOutOfRangeException(nameof(frameCount));
     }
 
     private static void ValidateBitRate(int bitRate)

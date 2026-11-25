@@ -7,42 +7,82 @@ namespace WellenEditor;
 /// <summary>Prepared clip audio; only summing and reading atomic mixer controls happen in Read.</summary>
 internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
 {
+    private const long MaxPreparedTrackBytes = 256L * 1024 * 1024;
+    private const long MaxPreparedProjectBytes = 512L * 1024 * 1024;
     private sealed record Voice(MultitrackTrack Track, long Start, float[] Samples);
     private readonly MultitrackTrack[] tracks;
     private sealed record TrackRenderState(Voice[] Voices, TrackEffectProcessor Effects, bool OfflineVst);
+    private readonly record struct TrackMemoryEstimate(long DryBytes, long EndFrame, long WithVstBytes);
     private sealed class TrackMix
     {
         public required MultitrackTrack Track;
         public required TrackRenderState State;
         public readonly float[] Buffer = new float[4096 * 2];
         public int PreparationVersion;
+        public readonly object PreparationGate = new();
+        public CancellationTokenSource? PreparationCancellation;
     }
     private readonly TrackMix[] trackMixes;
     private readonly ConcurrentQueue<string> preparationWarnings = new();
     private readonly TrackEffectChainRenderer.VstRenderer? vstRenderer;
+    private readonly bool failOnVstPreparationError;
     public IReadOnlyList<string> PreparationWarnings => preparationWarnings.ToArray();
-    public void UpdateTrackEffects(MultitrackTrack track)
+    public Task UpdateTrackEffects(MultitrackTrack track)
     {
         foreach (var mix in trackMixes)
         {
             if (!ReferenceEquals(mix.Track, track)) continue;
-            var currentState = Volatile.Read(ref mix.State);
-            if (!currentState.OfflineVst && !track.Effects.Any(effect => effect.Enabled && effect.Vst is not null))
+            lock (mix.PreparationGate)
             {
-                var nativeOnly = new TrackRenderState(currentState.Voices, new TrackEffectProcessor(track.Effects, WaveFormat.SampleRate), false);
-                Volatile.Write(ref mix.State, nativeOnly);
-                continue;
-            }
-            var version = Interlocked.Increment(ref mix.PreparationVersion);
-            var effects = track.Effects;
-            _ = Task.Run(() => PrepareTrack(track, effects))
-                .ContinueWith(task =>
+                var version = ++mix.PreparationVersion;
+                mix.PreparationCancellation?.Cancel();
+                mix.PreparationCancellation?.Dispose();
+                mix.PreparationCancellation = null;
+                var currentState = Volatile.Read(ref mix.State);
+                var effects = track.Effects.Select(effect => effect with { VstState = effect.VstState?.ToArray() }).ToArray();
+                if (!currentState.OfflineVst && !effects.Any(effect => effect.Enabled && effect.Vst is not null))
                 {
-                    if (task.IsCompletedSuccessfully && Volatile.Read(ref mix.PreparationVersion) == version)
-                        Volatile.Write(ref mix.State, task.Result);
-                    else if (task.IsFaulted && task.Exception is { } exception)
-                        preparationWarnings.Enqueue($"Spur '{track.Name}': Effekte konnten nicht neu vorbereitet werden ({exception.GetBaseException().Message}); bisherige Wiedergabe bleibt aktiv.");
-                }, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                    Volatile.Write(ref mix.State, new TrackRenderState(currentState.Voices, new TrackEffectProcessor(effects, WaveFormat.SampleRate), false));
+                    return Task.CompletedTask;
+                }
+                var cancellation = new CancellationTokenSource();
+                mix.PreparationCancellation = cancellation;
+                var clips = SnapshotClips(track);
+                var localWarnings = new ConcurrentQueue<string>();
+                var task = Task.Run(() => PrepareTrack(track, effects, clips, cancellation.Token, localWarnings.Enqueue), cancellation.Token);
+                return PublishPreparedTrackAsync(mix, track.Name, version, cancellation, task, localWarnings);
+            }
+        }
+        return Task.CompletedTask;
+    }
+
+    private async Task PublishPreparedTrackAsync(TrackMix mix, string trackName, int version, CancellationTokenSource cancellation, Task<TrackRenderState> task, ConcurrentQueue<string> localWarnings)
+    {
+        try
+        {
+            var state = await task.ConfigureAwait(false);
+            lock (mix.PreparationGate)
+                if (mix.PreparationVersion == version && !cancellation.IsCancellationRequested)
+                {
+                    Volatile.Write(ref mix.State, state);
+                    while (localWarnings.TryDequeue(out var warning)) preparationWarnings.Enqueue(warning);
+                }
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception exception)
+        {
+            lock (mix.PreparationGate)
+                if (mix.PreparationVersion == version)
+                    preparationWarnings.Enqueue($"Spur '{trackName}': Effekte konnten nicht neu vorbereitet werden ({exception.GetBaseException().Message}); bisherige Wiedergabe bleibt aktiv.");
+        }
+        finally
+        {
+            lock (mix.PreparationGate)
+                if (mix.PreparationVersion == version && ReferenceEquals(mix.PreparationCancellation, cancellation))
+                {
+                    mix.PreparationCancellation.Dispose();
+                    mix.PreparationCancellation = null;
+                }
         }
     }
     private long position;
@@ -71,12 +111,29 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
     public long FrameCount { get; }
     public WaveFormat WaveFormat { get; }
 
-    public MultitrackWaveProvider(MultitrackProject project, TrackEffectChainRenderer.VstRenderer? vstRenderer = null)
+    public MultitrackWaveProvider(MultitrackProject project, TrackEffectChainRenderer.VstRenderer? vstRenderer = null, bool failOnVstPreparationError = false)
     {
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(project.SampleRate, 2);
         this.vstRenderer = vstRenderer;
+        this.failOnVstPreparationError = failOnVstPreparationError;
         tracks = project.Tracks.ToArray();
-        trackMixes = tracks.Select(track => new TrackMix { Track = track, State = PrepareTrack(track, track.Effects) }).ToArray();
+        var estimatedProjectBytes = 0L;
+        foreach (var track in tracks)
+        {
+            var effects = track.Effects;
+            var clips = SnapshotClips(track);
+            var estimate = EstimateTrackMemory(track, effects, clips, WaveFormat.SampleRate);
+            if (estimate.DryBytes > MaxPreparedTrackBytes)
+                throw new NotSupportedException($"Die vorbereiteten Clips in Spur '{track.Name}' überschreiten das Speicherlimit von 256 MiB.");
+            var hasVst = effects.Any(effect => effect.Enabled && effect.Vst is not null);
+            var vstFits = estimate.EndFrame <= Array.MaxLength / 2 && estimate.WithVstBytes <= MaxPreparedTrackBytes;
+            if (hasVst && !vstFits && failOnVstPreparationError)
+                throw new NotSupportedException($"Die VST3-Vorbereitung von Spur '{track.Name}' überschreitet das Speicherlimit von 256 MiB.");
+            estimatedProjectBytes = checked(estimatedProjectBytes + (hasVst && vstFits ? estimate.WithVstBytes : estimate.DryBytes));
+        }
+        if (estimatedProjectBytes > MaxPreparedProjectBytes)
+            throw new NotSupportedException("Die Mehrspurvorbereitung überschreitet das Projekt-Speicherlimit von 512 MiB.");
+        trackMixes = tracks.Select(track => new TrackMix { Track = track, State = PrepareTrack(track, track.Effects, SnapshotClips(track), CancellationToken.None, preparationWarnings.Enqueue) }).ToArray();
         if (trackMixes.All(mix => mix.State.Voices.Length == 0)) throw new InvalidOperationException("Bitte zuerst ein Sample in die Mehrspuransicht ziehen.");
         FrameCount = trackMixes.SelectMany(mix => mix.State.Voices).Max(v => v.Start + v.Samples.Length / 2);
         rangeEnd = FrameCount;
@@ -93,28 +150,77 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         pendingWindow = activeWindow = new PlaybackWindow(rangeStart, rangeEnd, false);
     }
 
-    private TrackRenderState PrepareTrack(MultitrackTrack track, IReadOnlyList<TrackEffectSlot> effects)
+    private static MultitrackClip[] SnapshotClips(MultitrackTrack track) => track.Clips
+        .Select(clip => new MultitrackClip(clip.Source, clip.StartFrame) { DurationScale = clip.DurationScale })
+        .ToArray();
+
+    private static TrackMemoryEstimate EstimateTrackMemory(MultitrackTrack track, IReadOnlyList<TrackEffectSlot> effects, IReadOnlyList<MultitrackClip> clips, int rate)
     {
-        if (track.Clips.Count == 0)
-            return new TrackRenderState(Array.Empty<Voice>(), new TrackEffectProcessor(effects, WaveFormat.SampleRate), false);
-
-        var dryVoices = track.Clips.Select(clip => new Voice(track, clip.StartFrame, PrepareClip(clip, WaveFormat.SampleRate))).ToArray();
-        var hasVst = effects.Any(effect => effect.Enabled && effect.Vst is not null);
-        if (!hasVst)
-            return new TrackRenderState(dryVoices, new TrackEffectProcessor(effects, WaveFormat.SampleRate), false);
-
-        var frameCount = track.EndFrame;
-        if (frameCount > Array.MaxLength / 2)
+        long dryBytes = 0;
+        foreach (var clip in clips)
         {
-            preparationWarnings.Enqueue($"Spur '{track.Name}': Die Spur ist zu lang für die Offline-VST3-Kette; VST3-Effekte wurden übersprungen.");
-            return new TrackRenderState(dryVoices, new TrackEffectProcessor(effects.Where(effect => effect.Vst is null), WaveFormat.SampleRate), false);
+            var source = clip.Source;
+            var convertedFrames = checked((long)Math.Round((double)source.FrameCount * rate / source.SampleRate));
+            var outputFrames = checked((long)Math.Max(1, Math.Round(convertedFrames * clip.DurationScale)));
+            if (outputFrames <= 0 || outputFrames > Array.MaxLength / 2)
+                throw new NotSupportedException($"Ein Clip in Spur '{track.Name}' ist zu lang für die Speicher-Vorbereitung.");
+            var sourceBytes = checked(source.FrameCount * source.Channels * sizeof(float));
+            if (source.IsStreaming) dryBytes = checked(dryBytes + sourceBytes);
+            if (source.SampleRate != rate)
+            {
+                dryBytes = checked(dryBytes + convertedFrames * source.Channels * sizeof(float));
+                if (rate < source.SampleRate) dryBytes = checked(dryBytes + sourceBytes);
+            }
+            var stereoBytes = checked(convertedFrames * sizeof(float) * 2);
+            if (source.Channels != 2) dryBytes = checked(dryBytes + stereoBytes);
+            if (Math.Abs(clip.DurationScale - 1) >= .00001)
+                dryBytes = checked(dryBytes + stereoBytes + outputFrames * sizeof(float) * 2);
         }
 
+        var endFrame = clips.Count == 0 ? 0 : clips.Max(clip => checked(clip.StartFrame + (long)Math.Ceiling(clip.Source.FrameCount * clip.DurationScale * rate / clip.Source.SampleRate)));
+        var hasVst = effects.Any(effect => effect.Enabled && effect.Vst is not null);
+        var withVstBytes = hasVst && endFrame <= Array.MaxLength / 2
+            ? checked(dryBytes + endFrame * sizeof(float) * 2 * 3)
+            : dryBytes;
+        return new TrackMemoryEstimate(dryBytes, endFrame, withVstBytes);
+    }
+
+    private TrackRenderState PrepareTrack(MultitrackTrack track, IReadOnlyList<TrackEffectSlot> effects, IReadOnlyList<MultitrackClip> clips, CancellationToken cancellationToken, Action<string> reportWarning)
+    {
+        if (clips.Count == 0)
+            return new TrackRenderState(Array.Empty<Voice>(), new TrackEffectProcessor(effects, WaveFormat.SampleRate), false);
+
+        var estimate = EstimateTrackMemory(track, effects, clips, WaveFormat.SampleRate);
+        var hasVst = effects.Any(effect => effect.Enabled && effect.Vst is not null);
+        if (estimate.DryBytes > MaxPreparedTrackBytes)
+            throw new NotSupportedException($"Die vorbereiteten Clips in Spur '{track.Name}' überschreiten das Speicherlimit von 256 MiB.");
+        var endFrame = estimate.EndFrame;
+        var skipVstForPlayback = hasVst && (endFrame > Array.MaxLength / 2 || estimate.WithVstBytes > MaxPreparedTrackBytes);
+        if (skipVstForPlayback)
+        {
+            if (failOnVstPreparationError)
+                throw new NotSupportedException($"Die VST3-Vorbereitung von Spur '{track.Name}' überschreitet das Speicherlimit von 256 MiB.");
+        }
+
+        var dryVoices = clips.Select(clip =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return new Voice(track, clip.StartFrame, PrepareClip(clip, WaveFormat.SampleRate));
+        }).ToArray();
+        if (!hasVst || skipVstForPlayback)
+        {
+            if (skipVstForPlayback)
+                reportWarning($"Spur '{track.Name}': Die Offline-VST3-Kette überschreitet das Speicherlimit von 256 MiB; Vorschau nutzt ersatzweise den nativen/dry Signalweg.");
+            return new TrackRenderState(dryVoices, new TrackEffectProcessor(effects, WaveFormat.SampleRate), false);
+        }
+
+        var frameCount = endFrame;
         try
         {
             var stereo = new float[checked((int)frameCount * 2)];
             foreach (var voice in dryVoices)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var from = Math.Max(0L, voice.Start);
                 var to = Math.Min(frameCount, voice.Start + voice.Samples.Length / 2);
                 for (var frame = from; frame < to; frame++)
@@ -127,12 +233,13 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
             }
 
             var processed = TrackEffectChainRenderer.Process(stereo, effects, WaveFormat.SampleRate,
-                warning => preparationWarnings.Enqueue($"Spur '{track.Name}': {warning}"), vstRenderer);
+                warning => reportWarning($"Spur '{track.Name}': {warning}"), vstRenderer, failOnVstPreparationError, cancellationToken);
             return new TrackRenderState(new[] { new Voice(track, 0, processed) }, new TrackEffectProcessor(Array.Empty<TrackEffectSlot>(), WaveFormat.SampleRate), true);
         }
         catch (Exception exception)
         {
-            preparationWarnings.Enqueue($"Spur '{track.Name}': Die Offline-Effektkette ist fehlgeschlagen ({exception.Message}); VST3-Effekte wurden übersprungen.");
+            if (failOnVstPreparationError) throw;
+            reportWarning($"Spur '{track.Name}': Die Offline-Effektkette ist fehlgeschlagen ({exception.Message}); VST3-Effekte wurden übersprungen.");
             return new TrackRenderState(dryVoices, new TrackEffectProcessor(effects.Where(effect => effect.Vst is null), WaveFormat.SampleRate), false);
         }
     }

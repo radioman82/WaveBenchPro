@@ -291,4 +291,49 @@ public sealed class WavFileAudioSourceTests : IDisposable
             "Puffer muss Frames * Channels Samples fassen");
         src.ReadFrames(0, buffer, 0, 0).Should().Be(0);
     }
+
+    [Fact]
+    public void ReadFramesRejectsNonFiniteIeeeFloatSamples()
+    {
+        var path = CreateTempWav(3, 1, 48000, 32, BitConverter.GetBytes(float.NaN));
+        using var source = new WavFileAudioSource(path);
+
+        source.Invoking(item => item.ReadFrames(0, new float[1], 0, 1))
+            .Should().Throw<InvalidDataException>().WithMessage("*NaN*");
+    }
+
+    [Fact]
+    public void OpenReportsRf64AsUnsupportedRatherThanMalformedRiff()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavsrc_rf64_{Guid.NewGuid():N}.wav");
+        tempFiles.Add(path);
+        File.WriteAllBytes(path, Encoding.ASCII.GetBytes("RF64"));
+
+        var open = () => new WavFileAudioSource(path);
+
+        open.Should().Throw<NotSupportedException>().WithMessage("*RF64*");
+    }
+
+    [Fact]
+    public void ParserSkipsOddSizedChunksAndTheirPadByte()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavsrc_odd_chunk_{Guid.NewGuid():N}.wav");
+        tempFiles.Add(path);
+        using (var stream = File.Create(path))
+        using (var writer = new BinaryWriter(stream, Encoding.ASCII))
+        {
+            const int dataLength = 4;
+            const int riffSize = 4 + 24 + 12 + 8 + dataLength;
+            writer.Write(0x46464952); writer.Write(riffSize); writer.Write(0x45564157);
+            writer.Write(0x20746D66); writer.Write(16); writer.Write((short)1); writer.Write((short)1);
+            writer.Write(8000); writer.Write(16000); writer.Write((short)2); writer.Write((short)16);
+            writer.Write(0x4B4E554A); writer.Write(3); writer.Write(new byte[] { 7, 8, 9, 0 });
+            writer.Write(0x61746164); writer.Write(dataLength); writer.Write((short)16384); writer.Write((short)-16384);
+        }
+
+        using var source = new WavFileAudioSource(path);
+        var samples = new float[2];
+        source.ReadFrames(0, samples, 0, 2).Should().Be(2);
+        samples.Should().Equal(.5f, -.5f);
+    }
 }
