@@ -89,6 +89,29 @@ public sealed class BlockVstTrackTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public void RiffLimitIsCheckedBeforePreparingVstOrCreatingFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_vst_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var target = Path.Combine(root, "mix.wav");
+            File.WriteAllText(target, "original");
+            using var sound = AudioDocument.FromSamples(new[] { .1f }, 1, 48000);
+            var project = new MultitrackProject(); project.Add(sound);
+            project.Tracks[0].Clips[0].StartFrame = 536_870_784;
+            project.Tracks[0].SetEffects(new[] { Vst() });
+            var invoked = false;
+            Assert.Throws<NotSupportedException>(() => BlockMixdownRenderer.WriteWave(project, target, CancellationToken.None,
+                vstFactory: (_, source) => { invoked = true; return new ClampProvider(source); }, cacheDirectory: root));
+            Assert.False(invoked);
+            Assert.Equal("original", File.ReadAllText(target));
+            Assert.Single(Directory.GetFiles(root));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private sealed class InlineProgress(Action<double> callback) : IProgress<double> { public void Report(double value) => callback(value); }
     private sealed class EmptyProvider(WaveFormat format) : ISampleProvider
     {

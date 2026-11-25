@@ -157,11 +157,13 @@ internal sealed class BlockMixdownRenderer : IDisposable
         if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
             throw new IOException("Der Mixdown darf keine geöffnete Quelldatei überschreiben.");
         var anySolo = project.Tracks.Any(t => t.Solo && t.HasClip);
-        var hasVst = project.Tracks.Any(t => t.HasClip && !t.Muted && (!anySolo || t.Solo) && t.Effects.Any(f => f.Enabled && f.Vst is not null));
-        using var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
+        var audible = project.Tracks.Where(t => t.HasClip && !t.Muted && (!anySolo || t.Solo)).ToArray();
+        if (audible.Length == 0) throw new InvalidOperationException("Keine hörbare Spur vorhanden.");
         // RIFF 32-bit size, including the header written by WaveFileWriter.
-        if (renderer.FrameCount > (uint.MaxValue - 1024L) / 8)
+        if (audible.Max(t => t.EndFrame) > (uint.MaxValue - 1024L) / 8)
             throw new NotSupportedException("Der Mixdown überschreitet das RIFF-WAV-Limit; RF64 wird noch nicht unterstützt.");
+        var hasVst = audible.Any(t => t.Effects.Any(f => f.Enabled && f.Vst is not null));
+        using var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
         var temp = Path.Combine(Path.GetDirectoryName(target)!, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
         try
         {
