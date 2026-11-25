@@ -68,6 +68,7 @@ internal static class BlockVstTrackRenderer
 
     private sealed class TrackSource(IReadOnlyList<Clip> clips, long frames, int rate) : ISampleProvider
     {
+        private readonly ActiveClipIndex<Clip> index = new(clips, clip => clip.Start, clip => clip.Source.FrameCount);
         private readonly float[] scratch = new float[4096 * 2];
         private long position;
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(rate, 2);
@@ -81,7 +82,7 @@ internal static class BlockVstTrackRenderer
                 var count = Math.Min(4096, requested - done);
                 var target = buffer.Slice(done * 2, count * 2);
                 target.Clear();
-                foreach (var clip in clips)
+                foreach (var clip in index.At(position, count))
                 {
                     var from = Math.Max(position, clip.Start);
                     var to = Math.Min(position + count, checked(clip.Start + clip.Source.FrameCount));

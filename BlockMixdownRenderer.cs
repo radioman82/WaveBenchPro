@@ -9,7 +9,7 @@ namespace WellenEditor;
 internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
 {
     private sealed record Clip(IAudioSource Source, long Start);
-    private sealed record Track(Clip[] Clips, TrackEffectProcessor Effects, float Left, float Right);
+    private sealed record Track(ActiveClipIndex<Clip> Clips, TrackEffectProcessor Effects, float Left, float Right);
     private readonly List<IAudioSource> sources = new();
     private readonly List<Track> tracks = new();
     private readonly List<string> temporaryFiles = new();
@@ -85,6 +85,7 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
                     var cachePath = Path.Combine(cacheDirectory ?? cacheLease!.DirectoryPath, $"WaveBenchVst_{Guid.NewGuid():N}.wav");
                     temporaryFiles.Add(cachePath);
                     var currentTrackFrames = track.EndFrame;
+                    cacheLease?.Reserve(checked(currentTrackFrames * 8 + 1024));
                     BlockVstTrackRenderer.Render(cachePath, clips.Select(c => new BlockVstTrackRenderer.Clip(c.Source, c.Start)).ToArray(), effects, currentTrackFrames, SampleRate, cancellationToken, vstFactory,
                         value => progress?.Report(.5 * (preparedVstFrames + currentTrackFrames * value) / vstFrames));
                     preparedVstFrames += currentTrackFrames;
@@ -97,7 +98,7 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
                 }
                 var gain = (float)track.Gain;
                 var pan = (float)track.Pan;
-                tracks.Add(new Track(clips.ToArray(), new TrackEffectProcessor(effects, SampleRate), gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1)));
+                tracks.Add(new Track(new ActiveClipIndex<Clip>(clips, clip => clip.Start, clip => clip.Source.FrameCount), new TrackEffectProcessor(effects, SampleRate), gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1)));
             }
         }
         catch (Exception exception)
@@ -122,7 +123,7 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
         {
             cancellationToken.ThrowIfCancellationRequested();
             Array.Clear(trackBuffer, 0, processCount * 2);
-            foreach (var clip in track.Clips)
+            foreach (var clip in track.Clips.At(position, processCount))
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var from = Math.Max(position, clip.Start);
