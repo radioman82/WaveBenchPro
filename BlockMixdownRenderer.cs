@@ -5,13 +5,14 @@ using NAudio.Wave;
 
 namespace WellenEditor;
 
-/// <summary>Sequential offline mixer. Resampling, stretch and VST are rejected explicitly.</summary>
+/// <summary>Sequential offline mixer with per-export VST track preparation.</summary>
 internal sealed class BlockMixdownRenderer : IDisposable
 {
     private sealed record Clip(IAudioSource Source, long Start);
     private sealed record Track(Clip[] Clips, TrackEffectProcessor Effects, float Left, float Right);
     private readonly List<IAudioSource> sources = new();
     private readonly List<Track> tracks = new();
+    private readonly List<string> temporaryFiles = new();
     private readonly float[] trackBuffer;
     private readonly float[] sourceBuffer;
     private readonly long processingEnd;
@@ -20,7 +21,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
     public int SampleRate { get; }
     public int BlockFrames { get; }
 
-    public BlockMixdownRenderer(MultitrackProject project, int blockFrames = 4096)
+    public BlockMixdownRenderer(MultitrackProject project, int blockFrames = 4096, CancellationToken cancellationToken = default, BlockVstTrackRenderer.VstFactory? vstFactory = null, IProgress<double>? progress = null, string? cacheDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(project);
         if (blockFrames is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(blockFrames));
@@ -35,6 +36,13 @@ internal sealed class BlockMixdownRenderer : IDisposable
             if (clip.StartFrame < 0 || !double.IsFinite(clip.DurationScale) || clip.DurationScale <= 0)
                 throw new NotSupportedException("Blockweiser Mixdown benötigt eine gültige Clipposition und Clipdauer.");
         FrameCount = audible.Max(t => t.EndFrame);
+        var vstTracks = audible.Where(t => t.Effects.Any(f => f.Enabled && f.Vst is not null)).ToArray();
+        var vstFrames = vstTracks.Aggregate(0L, (total, track) => checked(total + track.EndFrame));
+        if (vstFrames > 16L * 1024 * 1024 * 1024 / 8)
+            throw new NotSupportedException("Die VST-Zwischendateien überschreiten das Limit von 16 GiB.");
+        if (vstTracks.Any(t => t.EndFrame > (uint.MaxValue - 1024L) / 8))
+            throw new NotSupportedException("Eine VST-Spur überschreitet das RIFF-WAV-Limit.");
+        long preparedVstFrames = 0;
         processingEnd = project.Tracks.Where(t => t.HasClip).Max(track =>
             track.Effects.Any(effect => effect.Enabled && effect.Vst is not null)
                 ? track.EndFrame
@@ -48,8 +56,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
         {
             foreach (var track in audible)
             {
-                if (track.Effects.Any(f => f.Enabled && f.Vst is not null))
-                    throw new NotSupportedException("Der blockweise Mixdown unterstützt VST-Effekte noch nicht.");
+                cancellationToken.ThrowIfCancellationRequested();
+                var effects = track.Effects.Select(effect => effect with { VstState = effect.VstState?.ToArray() }).ToArray();
                 var clips = new List<Clip>();
                 foreach (var clip in track.Clips)
                 {
@@ -70,9 +78,24 @@ internal sealed class BlockMixdownRenderer : IDisposable
                     sources.Add(source);
                     clips.Add(new Clip(source, clip.StartFrame));
                 }
+                if (effects.Any(f => f.Enabled && f.Vst is not null))
+                {
+                    var cachePath = Path.Combine(cacheDirectory ?? Path.GetTempPath(), $"WaveBenchVst_{Guid.NewGuid():N}.wav");
+                    temporaryFiles.Add(cachePath);
+                    var currentTrackFrames = track.EndFrame;
+                    BlockVstTrackRenderer.Render(cachePath, clips.Select(c => new BlockVstTrackRenderer.Clip(c.Source, c.Start)).ToArray(), effects, currentTrackFrames, SampleRate, cancellationToken, vstFactory,
+                        value => progress?.Report(.5 * (preparedVstFrames + currentTrackFrames * value) / vstFrames));
+                    preparedVstFrames += currentTrackFrames;
+                    foreach (var clip in clips) { clip.Source.Dispose(); sources.Remove(clip.Source); }
+                    clips.Clear();
+                    var cached = new WavFileAudioSource(cachePath);
+                    sources.Add(cached);
+                    clips.Add(new Clip(cached, 0));
+                    effects = Array.Empty<TrackEffectSlot>();
+                }
                 var gain = (float)track.Gain;
                 var pan = (float)track.Pan;
-                tracks.Add(new Track(clips.ToArray(), new TrackEffectProcessor(track.Effects, SampleRate), gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1)));
+                tracks.Add(new Track(clips.ToArray(), new TrackEffectProcessor(effects, SampleRate), gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1)));
             }
         }
         catch { Dispose(); throw; }
@@ -115,15 +138,22 @@ internal sealed class BlockMixdownRenderer : IDisposable
         return count;
     }
 
-    public void Dispose() { foreach (var source in sources) source.Dispose(); sources.Clear(); }
+    public void Dispose()
+    {
+        foreach (var source in sources) source.Dispose();
+        sources.Clear();
+        foreach (var path in temporaryFiles) { try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        temporaryFiles.Clear();
+    }
 
-    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null)
+    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null, BlockVstTrackRenderer.VstFactory? vstFactory = null, string? cacheDirectory = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var target = Path.GetFullPath(path);
         if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
             throw new IOException("Der Mixdown darf keine geöffnete Quelldatei überschreiben.");
-        using var renderer = new BlockMixdownRenderer(project);
+        var hasVst = project.Tracks.Any(t => t.HasClip && !t.Muted && t.Effects.Any(f => f.Enabled && f.Vst is not null));
+        using var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
         // RIFF 32-bit size, including the header written by WaveFileWriter.
         if (renderer.FrameCount > (uint.MaxValue - 1024L) / 8)
             throw new NotSupportedException("Der Mixdown überschreitet das RIFF-WAV-Limit; RF64 wird noch nicht unterstützt.");
@@ -146,7 +176,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
                     writer.Write(bytes, 0, count * 2 * sizeof(float));
                     written += count;
                     var percent = (int)(written * 100d / renderer.FrameCount);
-                    if (percent != lastPercent) { lastPercent = percent; progress?.Report(written / (double)renderer.FrameCount); }
+                    if (percent != lastPercent) { lastPercent = percent; var fraction = written / (double)renderer.FrameCount; progress?.Report(hasVst ? .5 + fraction * .5 : fraction); }
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();

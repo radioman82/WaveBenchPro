@@ -160,8 +160,8 @@ public sealed class BlockMixdownTests
         var project = new MultitrackProject(); project.Add(sound);
         var info = new Vst3ClassInfo("fake", "Audio Module Class", "Fake", "Tests", "1", "", "Fx");
         project.Tracks[0].SetEffects(new[] { TrackEffectSlot.ForVst(new Vst3EffectDescriptor("Fake", "Tests", "fake.vst3", info, "Fx")) });
-        var error = Assert.Throws<NotSupportedException>(() => new BlockMixdownRenderer(project));
-        Assert.Contains("VST", error.Message);
+        var error = Assert.Throws<FileNotFoundException>(() => new BlockMixdownRenderer(project));
+        Assert.Contains("fake.vst3", error.Message);
     }
 
     [Fact]
