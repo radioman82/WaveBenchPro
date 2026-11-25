@@ -201,6 +201,48 @@ public sealed class BlockMixdownTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public void CleanupFailureDoesNotHidePrimaryWriteErrorAndIdentifiesTemporaryFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_cleanup_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var target = Path.Combine(root, "mix.wav");
+        File.WriteAllText(target, "original");
+        try
+        {
+            using var sound = AudioDocument.FromSamples(new float[10000], 1, 48000);
+            var project = new MultitrackProject(); project.Add(sound);
+            var error = Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, target, CancellationToken.None,
+                openOutput: path => new FailingStream(path), deleteTemp: _ => throw new UnauthorizedAccessException("cleanup denied")));
+            Assert.Contains("simulierter voller Datenträger", error.Message);
+            Assert.Contains("cleanup denied", (string)error.Data["MixdownCleanupError"]!);
+            Assert.Contains(".tmp", (string)error.Data["MixdownCleanupError"]!);
+            Assert.Equal("original", File.ReadAllText(target));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void SourceBecomingHardlinkedDuringExportIsRejectedBeforeReplacement()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_swap_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var source = Path.Combine(root, "source.wav");
+        var target = Path.Combine(root, "target.wav");
+        File.WriteAllText(source, "original");
+        try
+        {
+            using var audio = AudioDocument.FromSamples(new float[10000], 1, 48000, source);
+            var project = new MultitrackProject(); project.Add(audio);
+            var linked = false;
+            var progress = new InlineProgress(_ => { if (!linked) { Assert.True(CreateHardLink(target, source, IntPtr.Zero)); linked = true; } });
+            Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, target, CancellationToken.None, progress));
+            Assert.Equal("original", File.ReadAllText(source));
+            Assert.Equal("original", File.ReadAllText(target));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private sealed class FailingStream(string path) : Stream
     {
         private readonly FileStream inner = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
@@ -261,6 +303,30 @@ public sealed class BlockMixdownTests
         }
         finally { Directory.Delete(root, true); }
     }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MixLengthAndSamplesMatchReferenceWithLongMutedTrack(bool solo)
+    {
+        using var shortSound = AudioDocument.FromSamples(Enumerable.Range(0, 1234).Select(i => .2f * MathF.Sin(i * .07f)).ToArray(), 1, 44100);
+        using var longSound = AudioDocument.FromSamples(new float[20000], 1, 48000);
+        var project = new MultitrackProject(); project.Add(shortSound); project.Add(longSound);
+        project.Tracks[0].Clips[0].DurationScale = 1.31;
+        if (solo) project.Tracks[0].Solo = true; else project.Tracks[1].Muted = true;
+        var expected = project.RenderMixdown();
+        using var renderer = new BlockMixdownRenderer(project, 257);
+        var block = new float[514];
+        var position = 0;
+        int read;
+        while ((read = renderer.Read(block, 257)) > 0)
+        {
+            for (var i = 0; i < read * 2; i++) Assert.InRange(Math.Abs(expected[position * 2 + i] - block[i]), 0, 1e-6f);
+            position += read;
+        }
+        Assert.Equal(expected.Length, position * 2);
+    }
+
 
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

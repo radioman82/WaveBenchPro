@@ -323,7 +323,11 @@ public partial class MainWindow : Window
             EditView_Click(sender, e);
             HintText.Content = "Mixdown erstellt – die Originalspuren bleiben unverändert.";
         }
-        catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (Exception exception)
+        {
+            var cleanup = exception.Data["MixdownCleanupError"] as string;
+            MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}{(cleanup is null ? "" : $"\n\n{cleanup}")}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
         finally { if (workspace is not null) workspace.IsEnabled = true; }
     }
 
@@ -353,8 +357,17 @@ public partial class MainWindow : Window
             await Task.Run(() => BlockMixdownRenderer.WriteWave(multitrack, dialog.FileName, cancellation.Token, progress));
             HintText.Content = "Mixdown als WAV gespeichert.";
         }
-        catch (OperationCanceledException) { HintText.Content = "Mixdown abgebrochen."; }
-        catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+        catch (OperationCanceledException exception)
+        {
+            HintText.Content = "Mixdown abgebrochen.";
+            if (exception.Data["MixdownCleanupError"] is string cleanup)
+                MessageBox.Show(this, cleanup, "Mixdown", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception exception)
+        {
+            var cleanup = exception.Data["MixdownCleanupError"] as string;
+            MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}{(cleanup is null ? "" : $"\n\n{cleanup}")}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
         finally
         {
             finished = true;

@@ -6,7 +6,7 @@ using NAudio.Wave;
 namespace WellenEditor;
 
 /// <summary>Sequential offline mixer with per-export VST track preparation.</summary>
-internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
+internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
 {
     private sealed record Clip(IAudioSource Source, long Start);
     private sealed record Track(Clip[] Clips, TrackEffectProcessor Effects, float Left, float Right);
@@ -100,11 +100,19 @@ internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
                 tracks.Add(new Track(clips.ToArray(), new TrackEffectProcessor(effects, SampleRate), gain * (pan > 0 ? 1 - pan : 1), gain * (pan < 0 ? 1 + pan : 1)));
             }
         }
-        catch { Dispose(); throw; }
+        catch (Exception exception)
+        {
+            try { Dispose(); }
+            catch (Exception cleanup) { exception.Data["MixdownCleanupError"] = $"Freigabe der Mehrspurquellen fehlgeschlagen: {cleanup.Message}"; }
+            throw;
+        }
     }
 
-    public int Read(float[] output, int frames)
+    public int Read(float[] output, int frames) => Read(output, frames, CancellationToken.None);
+
+    public int Read(float[] output, int frames, CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         ArgumentNullException.ThrowIfNull(output);
         if (frames < 0 || frames > BlockFrames || output.Length < frames * 2) throw new ArgumentOutOfRangeException(nameof(frames));
         var count = (int)Math.Min(frames, FrameCount - position);
@@ -112,9 +120,11 @@ internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
         var processCount = (int)Math.Min(count, Math.Max(0, processingEnd - position));
         foreach (var track in tracks)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             Array.Clear(trackBuffer, 0, processCount * 2);
             foreach (var clip in track.Clips)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var from = Math.Max(position, clip.Start);
                 var to = Math.Min(position + processCount, checked(clip.Start + clip.Source.FrameCount));
                 if (to <= from) continue;
@@ -142,15 +152,18 @@ internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
 
     public void Dispose()
     {
-        foreach (var source in sources) source.Dispose();
+        List<Exception>? errors = null;
+        foreach (var source in sources)
+            try { source.Dispose(); } catch (Exception exception) { (errors ??= new()).Add(exception); }
         sources.Clear();
-        foreach (var path in temporaryFiles) { try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        foreach (var path in temporaryFiles) { try { File.Delete(path); } catch (Exception exception) { (errors ??= new()).Add(exception); } }
         temporaryFiles.Clear();
-        cacheLease?.Dispose();
+        try { cacheLease?.Dispose(); } catch (Exception exception) { (errors ??= new()).Add(exception); }
         cacheLease = null;
+        if (errors is not null) throw new AggregateException("Mehrspur-Ressourcen konnten nicht vollständig freigegeben werden.", errors);
     }
 
-    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null, BlockVstTrackRenderer.VstFactory? vstFactory = null, string? cacheDirectory = null)
+    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null, BlockVstTrackRenderer.VstFactory? vstFactory = null, string? cacheDirectory = null, Action<string>? deleteTemp = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var target = Path.GetFullPath(path);
@@ -163,8 +176,9 @@ internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
         if (audible.Max(t => t.EndFrame) > (uint.MaxValue - 1024L) / 8)
             throw new NotSupportedException("Der Mixdown überschreitet das RIFF-WAV-Limit; RF64 wird noch nicht unterstützt.");
         var hasVst = audible.Any(t => t.Effects.Any(f => f.Enabled && f.Vst is not null));
-        using var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
+        var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
         var temp = Path.Combine(Path.GetDirectoryName(target)!, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
+        Exception? primaryError = null;
         try
         {
             using (var stream = openOutput is null ? new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None) : openOutput(temp))
@@ -187,9 +201,26 @@ internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
+            if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
+                throw new IOException("Das Mixdown-Ziel verweist inzwischen auf eine geöffnete Quelldatei.");
             File.Move(temp, target, overwrite: true);
         }
-        finally { if (File.Exists(temp)) File.Delete(temp); }
+        catch (Exception exception) { primaryError = exception; throw; }
+        finally
+        {
+            try { renderer.Dispose(); }
+            catch (Exception cleanupError)
+            {
+                if (primaryError is null) throw new IOException("Mehrspurquellen konnten nach dem Export nicht vollständig freigegeben werden.", cleanupError);
+                primaryError.Data["MixdownCleanupError"] = $"Freigabe der Mehrspurquellen fehlgeschlagen: {cleanupError.Message}";
+            }
+            try { if (File.Exists(temp)) (deleteTemp ?? File.Delete)(temp); }
+            catch (Exception cleanupError)
+            {
+                if (primaryError is null) throw new IOException($"Temporäre Mixdown-Datei konnte nicht entfernt werden: {temp}", cleanupError);
+                primaryError.Data["MixdownCleanupError"] = $"{primaryError.Data["MixdownCleanupError"]} Temporäre Datei blieb erhalten: {temp}; {cleanupError.Message}".Trim();
+            }
+        }
     }
 
     private static bool IsSameFile(string source, string target)
