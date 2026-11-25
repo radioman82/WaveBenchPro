@@ -105,6 +105,47 @@ public sealed class BufferedBlockWaveProviderTests
         Assert.Null(provider.WorkerError);
     }
 
+    [Fact]
+    public async Task PartialReadThenUnderrunCountsDeviceAndTimelineSeparately()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        using var provider = new BufferedBlockWaveProvider(new PartialRenderer(entered, release), 2);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        var buffer = new byte[4 * 8];
+        try
+        {
+            Assert.Equal(buffer.Length, provider.Read(buffer));
+            Assert.Equal(4, provider.DeviceFramesRead);
+            Assert.Equal(2, provider.TimelineFramesRead);
+            Assert.Equal(1, provider.UnderrunCount);
+            Assert.Equal(new[] { .1f, .1f, .2f, .2f, 0f, 0f, 0f, 0f }, MemoryMarshal.Cast<byte, float>(buffer).ToArray());
+        }
+        finally { release.Set(); }
+        await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(0, provider.Read(buffer));
+        Assert.Equal(4, provider.DeviceFramesRead);
+    }
+
+    private sealed class PartialRenderer(ManualResetEventSlim entered, ManualResetEventSlim release) : IBlockAudioRenderer
+    {
+        private int reads;
+        public int SampleRate => 48000;
+        public int BlockFrames => 4;
+        public int Read(float[] output, int frames)
+        {
+            if (Interlocked.Increment(ref reads) == 1)
+            {
+                output[0] = output[1] = .1f; output[2] = output[3] = .2f;
+                return 2;
+            }
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException();
+            return 0;
+        }
+        public void Dispose() { }
+    }
+
     private sealed class CancellableRenderer : ICancellableBlockAudioRenderer
     {
         public ManualResetEventSlim Entered { get; } = new();

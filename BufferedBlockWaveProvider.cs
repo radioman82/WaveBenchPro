@@ -23,10 +23,12 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     private readonly int[] sizes;
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task worker;
+    private readonly object lifetimeGate = new();
     private long produced, consumed, underruns, audioFrames, deviceFrames;
     private int blockOffset;
     private int complete;
     private int disposed;
+    private bool workerFinished;
     private Exception? workerError;
 
     public WaveFormat WaveFormat { get; }
@@ -77,6 +79,11 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                 Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
             }
             Volatile.Write(ref complete, 1);
+            lock (lifetimeGate)
+            {
+                workerFinished = true;
+                if (disposed != 0) cancellation.Dispose();
+            }
         }
     }
 
@@ -113,7 +120,13 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) == 0) cancellation.Cancel();
+        lock (lifetimeGate)
+        {
+            if (disposed != 0) return;
+            disposed = 1;
+            cancellation.Cancel();
+            if (workerFinished) cancellation.Dispose();
+        }
     }
 
     internal async Task<bool> StopAsync(TimeSpan timeout)
