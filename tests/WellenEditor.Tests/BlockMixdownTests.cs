@@ -227,7 +227,7 @@ public sealed class BlockMixdownTests
     }
 
     [Fact]
-    public void SourcePathAndUnsupportedStretchAreRejectedWithoutReplacingTarget()
+    public void SourcePathAndInvalidStretchAreRejectedWithoutReplacingTarget()
     {
         var path = Path.Combine(Path.GetTempPath(), $"wavebench_source_{Guid.NewGuid():N}.wav");
         File.WriteAllText(path, "original");
@@ -236,7 +236,7 @@ public sealed class BlockMixdownTests
             using var sound = AudioDocument.FromSamples(new float[100], 1, 48000, path);
             var project = new MultitrackProject(); project.Add(sound);
             Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, path, CancellationToken.None));
-            project.Tracks[0].Clips[0].DurationScale = 2;
+            project.Tracks[0].Clips[0].DurationScale = double.NaN;
             Assert.Throws<NotSupportedException>(() => new BlockMixdownRenderer(project));
             Assert.Equal("original", File.ReadAllText(path));
         }

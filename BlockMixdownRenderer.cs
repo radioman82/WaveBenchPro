@@ -14,6 +14,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
     private readonly List<Track> tracks = new();
     private readonly float[] trackBuffer;
     private readonly float[] sourceBuffer;
+    private readonly long processingEnd;
     private long position;
     public long FrameCount { get; }
     public int SampleRate { get; }
@@ -30,7 +31,19 @@ internal sealed class BlockMixdownRenderer : IDisposable
         var solo = project.Tracks.Any(t => t.Solo && t.HasClip);
         var audible = project.Tracks.Where(t => t.HasClip && !t.Muted && (!solo || t.Solo)).ToArray();
         if (audible.Length == 0) throw new InvalidOperationException("Keine hörbare Spur vorhanden.");
+        foreach (var clip in project.Tracks.SelectMany(track => track.Clips))
+            if (clip.StartFrame < 0 || !double.IsFinite(clip.DurationScale) || clip.DurationScale <= 0)
+                throw new NotSupportedException("Blockweiser Mixdown benötigt eine gültige Clipposition und Clipdauer.");
         FrameCount = audible.Max(t => t.EndFrame);
+        processingEnd = project.Tracks.Where(t => t.HasClip).Max(track =>
+            track.Effects.Any(effect => effect.Enabled && effect.Vst is not null)
+                ? track.EndFrame
+                : track.Clips.Max(clip =>
+                {
+                    var converted = clip.Source.SampleRate == SampleRate ? clip.Source.FrameCount : checked((long)Math.Round((double)clip.Source.FrameCount * SampleRate / clip.Source.SampleRate));
+                    var stretched = Math.Abs(clip.DurationScale - 1) < .00001 ? converted : checked((long)Math.Max(1, Math.Round(converted * clip.DurationScale)));
+                    return checked(clip.StartFrame + stretched);
+                }));
         try
         {
             foreach (var track in audible)
@@ -40,9 +53,20 @@ internal sealed class BlockMixdownRenderer : IDisposable
                 var clips = new List<Clip>();
                 foreach (var clip in track.Clips)
                 {
-                    if (clip.StartFrame < 0 || clip.Source.SampleRate != SampleRate || clip.DurationScale != 1d || clip.Source.Channels is < 1 or > 2)
-                        throw new NotSupportedException("Blockweiser Mixdown unterstützt derzeit Mono/Stereo mit gleicher Samplerate ohne Time-Stretch.");
-                    var source = clip.Source.OpenBlockSource();
+                    if (clip.StartFrame < 0 || !double.IsFinite(clip.DurationScale) || clip.DurationScale <= 0 || clip.Source.Channels is < 1 or > 2)
+                        throw new NotSupportedException("Blockweiser Mixdown benötigt Mono/Stereo und eine gültige Clipdauer.");
+                    var raw = clip.Source.OpenBlockSource();
+                    IAudioSource source = raw;
+                    try
+                    {
+                        if (source.SampleRate != SampleRate) source = new BlockResamplingSource(source, SampleRate);
+                        if (Math.Abs(clip.DurationScale - 1) >= .00001)
+                        {
+                            if (source.Channels == 1) source = new StereoBlockSource(source);
+                            source = new BlockStretchSource(source, clip.DurationScale);
+                        }
+                    }
+                    catch { source.Dispose(); throw; }
                     sources.Add(source);
                     clips.Add(new Clip(source, clip.StartFrame));
                 }
@@ -60,13 +84,14 @@ internal sealed class BlockMixdownRenderer : IDisposable
         if (frames < 0 || frames > BlockFrames || output.Length < frames * 2) throw new ArgumentOutOfRangeException(nameof(frames));
         var count = (int)Math.Min(frames, FrameCount - position);
         Array.Clear(output, 0, count * 2);
+        var processCount = (int)Math.Min(count, Math.Max(0, processingEnd - position));
         foreach (var track in tracks)
         {
-            Array.Clear(trackBuffer, 0, count * 2);
+            Array.Clear(trackBuffer, 0, processCount * 2);
             foreach (var clip in track.Clips)
             {
                 var from = Math.Max(position, clip.Start);
-                var to = Math.Min(position + count, checked(clip.Start + clip.Source.FrameCount));
+                var to = Math.Min(position + processCount, checked(clip.Start + clip.Source.FrameCount));
                 if (to <= from) continue;
                 var readFrames = checked((int)(to - from));
                 var read = clip.Source.ReadFrames(from - clip.Start, sourceBuffer, 0, readFrames);
@@ -79,8 +104,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
                     trackBuffer[offset + i * 2 + 1] += sourceBuffer[input + (clip.Source.Channels == 1 ? 0 : 1)];
                 }
             }
-            track.Effects.Process(trackBuffer.AsSpan(0, count * 2));
-            for (var i = 0; i < count * 2; i += 2)
+            track.Effects.Process(trackBuffer.AsSpan(0, processCount * 2));
+            for (var i = 0; i < processCount * 2; i += 2)
             {
                 output[i] += trackBuffer[i] * track.Left;
                 output[i + 1] += trackBuffer[i + 1] * track.Right;
