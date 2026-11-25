@@ -13,6 +13,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
     private readonly List<IAudioSource> sources = new();
     private readonly List<Track> tracks = new();
     private readonly List<string> temporaryFiles = new();
+    private VstCacheLease? cacheLease;
     private readonly float[] trackBuffer;
     private readonly float[] sourceBuffer;
     private readonly long processingEnd;
@@ -80,7 +81,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
                 }
                 if (effects.Any(f => f.Enabled && f.Vst is not null))
                 {
-                    var cachePath = Path.Combine(cacheDirectory ?? Path.GetTempPath(), $"WaveBenchVst_{Guid.NewGuid():N}.wav");
+                    if (cacheDirectory is null) cacheLease ??= VstCacheLease.Open();
+                    var cachePath = Path.Combine(cacheDirectory ?? cacheLease!.DirectoryPath, $"WaveBenchVst_{Guid.NewGuid():N}.wav");
                     temporaryFiles.Add(cachePath);
                     var currentTrackFrames = track.EndFrame;
                     BlockVstTrackRenderer.Render(cachePath, clips.Select(c => new BlockVstTrackRenderer.Clip(c.Source, c.Start)).ToArray(), effects, currentTrackFrames, SampleRate, cancellationToken, vstFactory,
@@ -144,6 +146,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
         sources.Clear();
         foreach (var path in temporaryFiles) { try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
         temporaryFiles.Clear();
+        cacheLease?.Dispose();
+        cacheLease = null;
     }
 
     public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null, BlockVstTrackRenderer.VstFactory? vstFactory = null, string? cacheDirectory = null)
@@ -152,7 +156,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
         var target = Path.GetFullPath(path);
         if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
             throw new IOException("Der Mixdown darf keine geöffnete Quelldatei überschreiben.");
-        var hasVst = project.Tracks.Any(t => t.HasClip && !t.Muted && t.Effects.Any(f => f.Enabled && f.Vst is not null));
+        var anySolo = project.Tracks.Any(t => t.Solo && t.HasClip);
+        var hasVst = project.Tracks.Any(t => t.HasClip && !t.Muted && (!anySolo || t.Solo) && t.Effects.Any(f => f.Enabled && f.Vst is not null));
         using var renderer = new BlockMixdownRenderer(project, cancellationToken: cancellationToken, vstFactory: vstFactory, progress: progress, cacheDirectory: cacheDirectory);
         // RIFF 32-bit size, including the header written by WaveFileWriter.
         if (renderer.FrameCount > (uint.MaxValue - 1024L) / 8)
