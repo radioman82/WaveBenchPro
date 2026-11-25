@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using NAudio.Wave;
 using NAudio.Vst3;
 using WellenEditor;
@@ -9,10 +10,7 @@ namespace WellenEditorTests;
 public sealed class BlockMixdownTests
 {
     [Theory]
-    [InlineData(256, 44100)]
-    [InlineData(1024, 48000)]
-    [InlineData(4096, 96000)]
-    [InlineData(8192, 192000)]
+    [MemberData(nameof(BlockAndRateCombinations))]
     public void BlocksMatchReferenceWithOverlapsGapsPanAndStatefulFilter(int blockSize, int rate)
     {
         var signal = Enumerable.Range(0, 10000).Select(i => .4f * MathF.Sin(i * .07f)).ToArray();
@@ -36,8 +34,45 @@ public sealed class BlockMixdownTests
             written += count;
         }
         Assert.Equal(expected.Length, written * 2);
+        double sumSquares = 0;
+        float maximum = 0;
         for (var index = 0; index < expected.Length; index++)
-            Assert.InRange(Math.Abs(expected[index] - actual[index]), 0, 1e-6f);
+        {
+            var difference = Math.Abs(expected[index] - actual[index]);
+            maximum = Math.Max(maximum, difference);
+            sumSquares += difference * difference;
+        }
+        var rms = Math.Sqrt(sumSquares / expected.Length);
+        Console.WriteLine($"rate={rate}, block={blockSize}, max={maximum:R}, rms={rms:R}");
+        Assert.InRange(maximum, 0, 1e-6f);
+        Assert.InRange(rms, 0, 1e-6);
+    }
+
+    public static IEnumerable<object[]> BlockAndRateCombinations() =>
+        from rate in new[] { 44100, 48000, 96000, 192000 }
+        from block in new[] { 256, 1024, 4096, 8192 }
+        select new object[] { block, rate };
+
+    [Theory]
+    [MemberData(nameof(BlockAndRateCombinations))]
+    public void ImpulseAndSilenceAcrossBlockBoundariesMatchReference(int blockSize, int rate)
+    {
+        var signal = new float[17000];
+        signal[255] = 1f; signal[256] = -.75f; signal[4095] = .6f; signal[8192] = -.4f;
+        using var sound = AudioDocument.FromSamples(signal, 1, rate);
+        var project = new MultitrackProject(); project.Add(sound);
+        project.Tracks[0].SetEffects(new[] { new TrackEffectSlot(Guid.NewGuid(), NativeEffectKind.LowPass, new EffectSettings { Frequency = 2000 }) });
+        var expected = project.RenderMixdown();
+        using var renderer = new BlockMixdownRenderer(project, blockSize);
+        var buffer = new float[blockSize * 2];
+        var offset = 0;
+        int count;
+        while ((count = renderer.Read(buffer, blockSize)) > 0)
+        {
+            for (var i = 0; i < count * 2; i++) Assert.InRange(Math.Abs(buffer[i] - expected[offset * 2 + i]), 0, 1e-6f);
+            offset += count;
+        }
+        Assert.Equal(signal.Length, offset);
     }
 
     [Fact]
@@ -207,4 +242,27 @@ public sealed class BlockMixdownTests
         }
         finally { File.Delete(path); }
     }
+
+    [Fact]
+    public void SourceHardlinkIsRejectedAsTheSameFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_hardlink_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var source = Path.Combine(root, "source.wav");
+        var link = Path.Combine(root, "alias.wav");
+        try
+        {
+            File.WriteAllText(source, "original");
+            Assert.True(CreateHardLink(link, source, IntPtr.Zero));
+            using var sound = AudioDocument.FromSamples(new float[32], 1, 48000, source);
+            var project = new MultitrackProject(); project.Add(sound);
+            Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, link, CancellationToken.None));
+            Assert.Equal("original", File.ReadAllText(source));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(string fileName, string existingFileName, IntPtr securityAttributes);
 }

@@ -1,4 +1,6 @@
 using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using NAudio.Wave;
 
 namespace WellenEditor;
@@ -94,7 +96,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var target = Path.GetFullPath(path);
-        if (project.Tracks.SelectMany(t => t.Clips).Any(c => !string.IsNullOrWhiteSpace(c.Source.SourcePath) && string.Equals(Path.GetFullPath(c.Source.SourcePath), target, StringComparison.OrdinalIgnoreCase)))
+        if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
             throw new IOException("Der Mixdown darf keine geöffnete Quelldatei überschreiben.");
         using var renderer = new BlockMixdownRenderer(project);
         // RIFF 32-bit size, including the header written by WaveFileWriter.
@@ -107,6 +109,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
             using (var writer = new WaveFileWriter(stream, WaveFormat.CreateIeeeFloatWaveFormat(renderer.SampleRate, 2)))
             {
                 var block = new float[renderer.BlockFrames * 2];
+                var bytes = new byte[renderer.BlockFrames * 2 * sizeof(float)];
                 long written = 0;
                 var lastPercent = -1;
                 while (written < renderer.FrameCount)
@@ -114,7 +117,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     var count = renderer.Read(block, renderer.BlockFrames);
                     if (count <= 0) throw new EndOfStreamException("Mixdown endete vorzeitig.");
-                    writer.WriteSamples(block, 0, count * 2);
+                    Buffer.BlockCopy(block, 0, bytes, 0, count * 2 * sizeof(float));
+                    writer.Write(bytes, 0, count * 2 * sizeof(float));
                     written += count;
                     var percent = (int)(written * 100d / renderer.FrameCount);
                     if (percent != lastPercent) { lastPercent = percent; progress?.Report(written / (double)renderer.FrameCount); }
@@ -125,4 +129,29 @@ internal sealed class BlockMixdownRenderer : IDisposable
         }
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
+
+    private static bool IsSameFile(string source, string target)
+    {
+        if (string.IsNullOrWhiteSpace(source)) return false;
+        var fullSource = Path.GetFullPath(source);
+        if (string.Equals(fullSource, target, StringComparison.OrdinalIgnoreCase)) return true;
+        if (!File.Exists(fullSource) || !File.Exists(target)) return false;
+        using var sourceHandle = File.OpenHandle(fullSource, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var targetHandle = File.OpenHandle(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        if (!GetFileInformationByHandle(sourceHandle, out var a) || !GetFileInformationByHandle(targetHandle, out var b))
+            throw new IOException("Die Dateizugehörigkeit des Mixdown-Ziels konnte nicht sicher geprüft werden.");
+        return a.VolumeSerialNumber == b.VolumeSerialNumber && a.FileIndexHigh == b.FileIndexHigh && a.FileIndexLow == b.FileIndexLow;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileInformation
+    {
+        public uint Attributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime, LastAccessTime, LastWriteTime;
+        public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out FileInformation information);
 }
