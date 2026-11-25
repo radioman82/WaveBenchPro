@@ -88,7 +88,7 @@ public static class NativeEffects
         NativeEffectKind.HighPass => "Hochpass",
         NativeEffectKind.LowPass => "Tiefpass",
         NativeEffectKind.Compressor => "Kompressor",
-        NativeEffectKind.Limiter => "Limiter",
+        NativeEffectKind.Limiter => "Peak-Clipper",
         _ => kind.ToString()
     };
 
@@ -99,6 +99,7 @@ public static class NativeEffects
         if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
         if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
         if (block.Length % channels != 0) throw new ArgumentException("Die Sample-Anzahl ist kein Vielfaches der Kanalanzahl.", nameof(block));
+        ValidateSettings(settings, kind, sampleRate);
 
         var result = (float[])block.Clone();
         switch (kind)
@@ -127,14 +128,61 @@ public static class NativeEffects
         return result;
     }
 
+    internal static void ValidateSettings(EffectSettings settings, NativeEffectKind kind, int sampleRate)
+    {
+        ArgumentNullException.ThrowIfNull(settings);
+        if (sampleRate <= 0) throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        static void InRange(double value, double minimum, double maximum, string name)
+        {
+            if (!double.IsFinite(value) || value < minimum || value > maximum)
+                throw new ArgumentOutOfRangeException(name, value, $"Erlaubt sind Werte von {minimum} bis {maximum}.");
+        }
+
+        switch (kind)
+        {
+            case NativeEffectKind.Gain:
+                InRange(settings.GainDb, -60, 24, nameof(settings.GainDb));
+                break;
+            case NativeEffectKind.Equalizer:
+                InRange(settings.Frequency, 10, sampleRate * 0.49, nameof(settings.Frequency));
+                InRange(settings.Q, 0.1, 20, nameof(settings.Q));
+                InRange(settings.GainDb, -24, 24, nameof(settings.GainDb));
+                break;
+            case NativeEffectKind.HighPass:
+            case NativeEffectKind.LowPass:
+                InRange(settings.Frequency, 10, sampleRate * 0.49, nameof(settings.Frequency));
+                break;
+            case NativeEffectKind.Compressor:
+                InRange(settings.ThresholdDb, -60, 0, nameof(settings.ThresholdDb));
+                InRange(settings.Ratio, 1, 20, nameof(settings.Ratio));
+                InRange(settings.AttackMs, 0.1, 5000, nameof(settings.AttackMs));
+                InRange(settings.ReleaseMs, 0.1, 5000, nameof(settings.ReleaseMs));
+                InRange(settings.MakeupDb, -24, 24, nameof(settings.MakeupDb));
+                break;
+            case NativeEffectKind.Limiter:
+                InRange(settings.ThresholdDb, -60, 0, nameof(settings.ThresholdDb));
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(kind));
+        }
+    }
+
     public static void ApplyGain(float[] samples, double gainDb)
     {
+        ArgumentNullException.ThrowIfNull(samples);
+        if (!double.IsFinite(gainDb) || gainDb < -60 || gainDb > 24)
+            throw new ArgumentOutOfRangeException(nameof(gainDb), gainDb, "Erlaubt sind Werte von -60 bis 24 dB.");
         var factor = (float)Math.Pow(10, gainDb / 20d);
         for (var index = 0; index < samples.Length; index++) samples[index] *= factor;
     }
 
     public static void ApplyLimiter(float[] samples, int channels, double thresholdDb)
     {
+        ArgumentNullException.ThrowIfNull(samples);
+        if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+        if (samples.Length % channels != 0) throw new ArgumentException("Die Sample-Anzahl ist kein Vielfaches der Kanalanzahl.", nameof(samples));
+        if (!double.IsFinite(thresholdDb) || thresholdDb < -60 || thresholdDb > 0)
+            throw new ArgumentOutOfRangeException(nameof(thresholdDb), thresholdDb, "Erlaubt sind Werte von -60 bis 0 dB.");
         var threshold = (float)Math.Pow(10, thresholdDb / 20d);
         if (threshold <= 0) return;
         for (var frame = 0; frame < samples.Length / channels; frame++)

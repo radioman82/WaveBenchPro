@@ -63,6 +63,22 @@ public sealed class WavFileAudioSourceTests : IDisposable
         return path;
     }
 
+    private string CreateExtensiblePcm32Wav(int validBits, int sample)
+    {
+        var data = BitConverter.GetBytes(sample);
+        var path = Path.Combine(Path.GetTempPath(), $"wavsrc_ext32_{Guid.NewGuid():N}.wav");
+        tempFiles.Add(path);
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var w = new BinaryWriter(fs, Encoding.ASCII);
+        w.Write(0x46464952); w.Write(4 + 8 + 40 + 8 + data.Length); w.Write(0x45564157);
+        w.Write(0x20746D66); w.Write(40); w.Write(unchecked((short)0xFFFE));
+        w.Write((short)1); w.Write(48000); w.Write(192000); w.Write((short)4); w.Write((short)32);
+        w.Write((short)22); w.Write((short)validBits); w.Write(0);
+        w.Write(new Guid("00000001-0000-0010-8000-00aa00389b71").ToByteArray());
+        w.Write(0x61746164); w.Write(data.Length); w.Write(data);
+        return path;
+    }
+
     /// <summary>Erzeugt PCM16-Daten: Frame i, Kanal c = (i * channels + c) als int16.</summary>
     private static byte[] Pcm16Data(int frames, int channels)
     {
@@ -117,6 +133,27 @@ public sealed class WavFileAudioSourceTests : IDisposable
         source.ReadFrames(0, decoded, 0, 2).Should().Be(2);
         source.BitsPerSample.Should().Be(16);
         decoded.Should().Equal(0f, 0f, 0f, 0f);
+    }
+
+    [Fact]
+    public void ExtensiblePcmAcceptsFewerValidBitsThanContainerWidth()
+    {
+        var path = CreateExtensiblePcm32Wav(validBits: 24, sample: 1 << 30);
+        using var source = new WavFileAudioSource(path);
+        var decoded = new float[1];
+
+        source.ReadFrames(0, decoded, 0, 1).Should().Be(1);
+
+        decoded[0].Should().BeApproximately(.5f, 1e-6f);
+    }
+
+    [Fact]
+    public void ExtensiblePcmRejectsMoreValidBitsThanContainerWidth()
+    {
+        var path = CreateExtensiblePcm32Wav(validBits: 33, sample: 0);
+        var open = () => new WavFileAudioSource(path);
+
+        open.Should().Throw<InvalidDataException>();
     }
 
     [Fact]

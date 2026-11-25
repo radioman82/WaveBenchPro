@@ -2,6 +2,7 @@
 using NAudio.SoundFile;
 using NAudio.Wave;
 using System.IO;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 namespace WellenEditor;
@@ -9,6 +10,7 @@ namespace WellenEditor;
 public sealed class AudioDocument : IDisposable
 {
     private const int WaveformPreviewFrames = 8192;
+    private static int orphanUndoCleanupDone;
 
     private sealed record AudioSnapshot(string Path);
     private readonly Stack<AudioSnapshot> undoHistory = new();
@@ -497,25 +499,28 @@ public sealed class AudioDocument : IDisposable
     /// <summary>Saves a WAV in its original bit depth when that depth is supported.</summary>
     public void SaveInSourceWaveFormat(string path)
     {
-        var bits = OriginalWaveBitsPerSample is 16 or 24 or 32 ? OriginalWaveBitsPerSample.Value : 32;
-        SaveAsWave(path, bits);
-        OriginalWaveBitsPerSample = bits;
-        OriginalWaveIsIeeeFloat = bits == 32;
+        var bits = OriginalWaveBitsPerSample is 16 or 24 or 32 or 64 ? OriginalWaveBitsPerSample.Value : 32;
+        var isFloat = !OriginalWaveBitsPerSample.HasValue || OriginalWaveIsIeeeFloat;
+        SaveWave(path, bits, isFloat);
+        UpdateSourcePath(path);
     }
 
     public void SaveAsWave(string path, int bitsPerSample)
+        => SaveWave(path, bitsPerSample, bitsPerSample == 32);
+
+    private void SaveWave(string path, int bitsPerSample, bool isIeeeFloat)
     {
         if (IsStreaming)
         {
-            SaveStreamingWave(path, 0, FrameCount, bitsPerSample);
+            SaveStreamingWave(path, 0, FrameCount, bitsPerSample, isIeeeFloat);
             return;
         }
         var tempPath = path + ".tmp";
         try
         {
-            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
+            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample, isIeeeFloat)))
             {
-                WriteSamples(writer, Samples, 0, Samples.Length, bitsPerSample);
+                WriteSamples(writer, Samples, 0, Samples.Length, bitsPerSample, isIeeeFloat);
             }
             CommitTempFile(tempPath, path);
         }
@@ -542,7 +547,7 @@ public sealed class AudioDocument : IDisposable
         {
             using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
             {
-                WriteSamples(writer, Samples, offset, count, bitsPerSample);
+                WriteSamples(writer, Samples, offset, count, bitsPerSample, bitsPerSample == 32);
             }
             CommitTempFile(tempPath, path);
         }
@@ -624,12 +629,16 @@ public sealed class AudioDocument : IDisposable
     public void SaveRangeAsOpus(string path, int startFrame, int frameCount, double quality = .6) =>
         SaveAsSoundFile(path, startFrame, frameCount, SoundFileMajorFormat.Opus, new SoundFileWriterOptions { VbrQuality = quality });
 
-    private WaveFormat CreateWaveFormat(int bitsPerSample) => bitsPerSample switch
+    private WaveFormat CreateWaveFormat(int bitsPerSample) => CreateWaveFormat(bitsPerSample, bitsPerSample == 32);
+
+    private WaveFormat CreateWaveFormat(int bitsPerSample, bool isIeeeFloat) => (bitsPerSample, isIeeeFloat) switch
     {
-        32 => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
-        24 => new WaveFormat(SampleRate, 24, Channels),
-        16 => new WaveFormat(SampleRate, 16, Channels),
-        _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, "Unterstützt werden 16, 24 und 32 Bit.")
+        (32, true) => WaveFormat.CreateIeeeFloatWaveFormat(SampleRate, Channels),
+        (64, true) => WaveFormat.CreateCustomFormat(WaveFormatEncoding.IeeeFloat, SampleRate, Channels, SampleRate * Channels * 8, Channels * 8, 64),
+        (16, false) => new WaveFormat(SampleRate, 16, Channels),
+        (24, false) => new WaveFormat(SampleRate, 24, Channels),
+        (32, false) => new WaveFormat(SampleRate, 32, Channels),
+        _ => throw new ArgumentOutOfRangeException(nameof(bitsPerSample), bitsPerSample, "Unterstützt werden 16/24/32-Bit-PCM und 32/64-Bit-Float.")
     };
 
     private void SaveAsSoundFile(string path, int startFrame, int frameCount, SoundFileMajorFormat format, SoundFileWriterOptions options)
@@ -654,14 +663,15 @@ public sealed class AudioDocument : IDisposable
         }
     }
 
-    private void SaveStreamingWave(string path, int startFrame, int frameCount, int bitsPerSample)
+    private void SaveStreamingWave(string path, int startFrame, int frameCount, int bitsPerSample, bool? isIeeeFloat = null)
     {
+        var floatingPoint = isIeeeFloat ?? bitsPerSample == 32;
         var tempPath = path + ".tmp";
         try
         {
-            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample)))
+            using (var writer = new WaveFileWriter(tempPath, CreateWaveFormat(bitsPerSample, floatingPoint)))
             {
-                RenderStreaming(startFrame, frameCount, (buffer, sampleCount) => WriteSamples(writer, buffer, 0, sampleCount, bitsPerSample));
+                RenderStreaming(startFrame, frameCount, (buffer, sampleCount) => WriteSamples(writer, buffer, 0, sampleCount, bitsPerSample, floatingPoint));
             }
             CommitTempFile(tempPath, path);
         }
@@ -730,14 +740,36 @@ public sealed class AudioDocument : IDisposable
         if (File.Exists(tempPath)) File.Delete(tempPath);
     }
 
-    private static void WriteSamples(WaveFileWriter writer, float[] samples, int offset, int count, int bitsPerSample)
+    private static void WriteSamples(WaveFileWriter writer, float[] samples, int offset, int count, int bitsPerSample, bool isIeeeFloat)
     {
-        switch (bitsPerSample)
+        switch (bitsPerSample, isIeeeFloat)
         {
-            case 32: writer.WriteSamples(samples, offset, count); break;
-            case 24: WritePcm24(writer, samples, offset, count); break;
-            case 16: WritePcm16(writer, samples, offset, count); break;
+            case (32, true): writer.WriteSamples(samples, offset, count); break;
+            case (64, true): WriteFloat64(writer, samples, offset, count); break;
+            case (32, false): WritePcm32(writer, samples, offset, count); break;
+            case (24, false): WritePcm24(writer, samples, offset, count); break;
+            case (16, false): WritePcm16(writer, samples, offset, count); break;
         }
+    }
+
+    private static void WritePcm32(Stream writer, float[] samples, int offset, int count)
+    {
+        var data = new byte[checked(count * sizeof(int))];
+        for (var index = 0; index < count; index++)
+        {
+            var sample = Math.Clamp((double)samples[offset + index], -1d, 1d);
+            var value = (int)Math.Clamp(Math.Round(sample * 2147483647d), int.MinValue, int.MaxValue);
+            BitConverter.TryWriteBytes(data.AsSpan(index * sizeof(int), sizeof(int)), value);
+        }
+        writer.Write(data);
+    }
+
+    private static void WriteFloat64(Stream writer, float[] samples, int offset, int count)
+    {
+        var data = new byte[checked(count * sizeof(double))];
+        for (var index = 0; index < count; index++)
+            BitConverter.TryWriteBytes(data.AsSpan(index * sizeof(double), sizeof(double)), (double)samples[offset + index]);
+        writer.Write(data);
     }
 
     private static void WritePcm16(Stream writer, float[] samples) => WritePcm16(writer, samples, 0, samples.Length);
@@ -811,9 +843,39 @@ public sealed class AudioDocument : IDisposable
         InvalidateSpectrogram();
     }
 
+    private static void CleanupOrphanedSnapshots()
+    {
+        if (Interlocked.Exchange(ref orphanUndoCleanupDone, 1) != 0) return;
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(Path.GetTempPath(), "WaveBenchPro_Undo_*.bin"))
+            {
+                var parts = Path.GetFileNameWithoutExtension(path).Split('_');
+                if (parts.Length >= 4 && int.TryParse(parts[2], out var processId))
+                {
+                    try { using var process = Process.GetProcessById(processId); }
+                    catch (ArgumentException) { TryDeleteSnapshot(new AudioSnapshot(path)); }
+                    catch (InvalidOperationException) { TryDeleteSnapshot(new AudioSnapshot(path)); }
+                    catch { }
+                }
+                else
+                {
+                    try
+                    {
+                        if (File.GetLastWriteTimeUtc(path) < DateTime.UtcNow.AddDays(-30))
+                            TryDeleteSnapshot(new AudioSnapshot(path));
+                    }
+                    catch { }
+                }
+            }
+        }
+        catch { /* Cleanup must never block an edit when temp storage is unavailable. */ }
+    }
+
     private static AudioSnapshot CreateSnapshot(float[] audio)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Undo_{Guid.NewGuid():N}.bin");
+        CleanupOrphanedSnapshots();
+        var path = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Undo_{Environment.ProcessId}_{Guid.NewGuid():N}.bin");
         try
         {
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan);

@@ -96,8 +96,10 @@ public sealed class WavFileAudioSource : IAudioSource
                     var pcmGuid = new Guid("00000001-0000-0010-8000-00aa00389b71");
                     var floatGuid = new Guid("00000003-0000-0010-8000-00aa00389b71");
                     fmtTag = subFormatGuid == pcmGuid ? FormatPcm : subFormatGuid == floatGuid ? FormatIeeeFloat : (short)0;
-                    if (validBits != 0 && validBits != bits)
-                        throw new NotSupportedException($"WAVEFORMATEXTENSIBLE mit {validBits} gültigen Bits in {bits}-Bit-Containern wird nicht unterstützt.");
+                    if (fmtTag == FormatPcm && validBits != 0 && validBits > bits)
+                        throw new InvalidDataException($"WAVEFORMATEXTENSIBLE meldet {validBits} gültige Bits in einem {bits}-Bit-PCM-Container.");
+                    if (fmtTag == FormatIeeeFloat && validBits != 0 && validBits != bits)
+                        throw new NotSupportedException($"WAVEFORMATEXTENSIBLE IEEE-Float mit {validBits} gültigen Bits in {bits}-Bit-Containern ist ungültig.");
                 }
                 else if (fmtTag == FormatExtensible)
                     throw new InvalidDataException("WAVEFORMATEXTENSIBLE-fmt-Chunk ist kürzer als 40 Byte.");

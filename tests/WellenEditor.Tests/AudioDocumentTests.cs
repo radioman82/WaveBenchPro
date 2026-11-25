@@ -43,13 +43,32 @@ public sealed class AudioDocumentTests
     [InlineData(16, false)]
     [InlineData(24, false)]
     [InlineData(32, true)]
+    [InlineData(32, false)]
+    [InlineData(64, true)]
     public void SaveInSourceWaveFormatKeepsOriginalPcmDepthOrFloat(int bits, bool isFloat)
     {
         var path = Path.Combine(Path.GetTempPath(), $"wavebench_preserve_{Guid.NewGuid():N}.wav");
         try
         {
-            using (var source = AudioDocument.FromSamples(new[] { .25f, -.25f }, 1, 48000))
-                source.SaveAsWave(path, bits);
+            using (var writer = new WaveFileWriter(path, (bits, isFloat) switch
+            {
+                (32, true) => WaveFormat.CreateIeeeFloatWaveFormat(48000, 1),
+                (64, true) => WaveFormat.CreateCustomFormat(WaveFormatEncoding.IeeeFloat, 48000, 1, 48000 * 8, 8, 64),
+                _ => new WaveFormat(48000, bits, 1)
+            }))
+            {
+                if (isFloat && bits == 64)
+                {
+                    writer.Write(BitConverter.GetBytes(.25d));
+                    writer.Write(BitConverter.GetBytes(-.25d));
+                }
+                else if (bits == 32 && !isFloat)
+                {
+                    writer.Write(BitConverter.GetBytes(536870912));
+                    writer.Write(BitConverter.GetBytes(-536870912));
+                }
+                else writer.WriteSamples(new[] { .25f, -.25f }, 0, 2);
+            }
             using var document = AudioDocument.Load(path);
 
             document.SaveInSourceWaveFormat(path);
@@ -59,6 +78,35 @@ public sealed class AudioDocumentTests
             saved.IsIeeeFloat.Should().Be(isFloat);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void SavingStreamedDeleteInPlaceRebasesTimelineToNewWaveFile()
+    {
+        var path = CreateStreamingTestWave(100);
+        try
+        {
+            using var document = AudioDocument.Load(path);
+            document.Delete(new Selection(30, 60));
+            var expected = CaptureStreamingPlayback(document, 0, 70);
+
+            document.SaveInSourceWaveFormat(path);
+
+            document.IsStreaming.Should().BeTrue();
+            document.FrameCount.Should().Be(70);
+            CaptureStreamingPlayback(document, 0, 70).Should().Equal(expected);
+            document.CanUndo.Should().BeFalse("the old history points at the replaced source file");
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    private static float[] CaptureStreamingPlayback(AudioDocument document, int startFrame, int frames)
+    {
+        using var provider = (IDisposable)document.CreateWaveProvider(startFrame, frames);
+        var waveProvider = (IWaveProvider)provider;
+        var bytes = new byte[frames * document.Channels * sizeof(float)];
+        waveProvider.Read(bytes.AsSpan()).Should().Be(bytes.Length);
+        return System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(bytes).ToArray();
     }
 
     [Fact]

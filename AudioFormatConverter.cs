@@ -89,6 +89,17 @@ public static class AudioFormatConverter
         var frames = samples.Length / channels;
         var cutoff = 0.94 * rateRatio;
         var halfWidth = Math.Max(16, (int)Math.Ceiling(16 / cutoff));
+        // Filter weights depend only on the downsampling ratio and tap distance.
+        // Computing Sin/Cos for every source frame dominated long conversions.
+        var weights = new double[halfWidth * 2 + 1];
+        for (var distance = -halfWidth; distance <= halfWidth; distance++)
+        {
+            var x = cutoff * distance;
+            var sinc = Math.Abs(x) < 1e-12 ? 1d : Math.Sin(Math.PI * x) / (Math.PI * x);
+            var windowPosition = distance / (double)halfWidth;
+            var window = 0.42 + 0.5 * Math.Cos(Math.PI * windowPosition) + 0.08 * Math.Cos(2 * Math.PI * windowPosition);
+            weights[distance + halfWidth] = cutoff * sinc * window;
+        }
         var filtered = new float[samples.Length];
         for (var frame = 0; frame < frames; frame++)
         {
@@ -97,11 +108,7 @@ public static class AudioFormatConverter
             var last = Math.Min(halfWidth, frames - 1 - frame);
             for (var distance = first; distance <= last; distance++)
             {
-                var x = cutoff * distance;
-                var sinc = Math.Abs(x) < 1e-12 ? 1d : Math.Sin(Math.PI * x) / (Math.PI * x);
-                var windowPosition = distance / (double)halfWidth;
-                var window = 0.42 + 0.5 * Math.Cos(Math.PI * windowPosition) + 0.08 * Math.Cos(2 * Math.PI * windowPosition);
-                var weight = cutoff * sinc * window;
+                var weight = weights[distance + halfWidth];
                 weightSum += weight;
                 var sourceFrame = frame + distance;
                 for (var channel = 0; channel < channels; channel++)

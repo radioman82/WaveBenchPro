@@ -26,6 +26,7 @@ internal sealed class TrackEffectProcessor
         public Stage(TrackEffectSlot fx, int rate)
         {
             kind = fx.Kind; var s = fx.Settings;
+            NativeEffects.ValidateSettings(s, kind, rate);
             gain = Math.Pow(10, (kind == NativeEffectKind.Compressor ? s.MakeupDb : s.GainDb) / 20);
             threshold = Math.Pow(10, s.ThresholdDb / 20); ratio = Math.Max(1, s.Ratio);
             attack = 1 - Math.Exp(-1 / (Math.Max(.1, s.AttackMs) / 1000 * rate));

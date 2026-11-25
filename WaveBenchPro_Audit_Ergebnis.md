@@ -2,14 +2,14 @@
 
 **Erstellt:** 25.11.2026  
 **Geprüfte Basis:** Repository `radioman82/WaveBenchPro`, Stand `61ad8c2` vor den Korrekturen  
-**GitHub-Stand nach Korrekturen:** `1718e84` auf `main` und `feature/v0.3`  
+**GitHub-Basisstand der ersten Prüfung:** `1718e84` auf `main` und `feature/v0.3`
 **Ausgangsbericht:** `C:\Users\fred\Downloads\WaveBenchPro_Audit.md`
 
 ## Ergebnis in Kürze
 
 Der Ausgangsbericht enthält eine Mischung aus bestätigten Fehlern, echten Einschränkungen und ungeprüften Verdachtsfällen. Die bestätigten, im aktuellen Umfang korrigierbaren Fehler wurden angepasst und mit Regressionstests abgesichert. Nicht reproduzierte Verdachtsfälle sind nicht als bewiesene Bugs eingestuft.
 
-Die Test-Suite besteht mit **83 von 83 Tests**. Der Release-Build ist erfolgreich. Es gab keinen Live-Test mit WASAPI-Aufnahmehardware oder einem absichtlich fehlerhaften VST3-Plugin.
+Die erste Prüfung bewertete 24 Befunde. Eine ergänzende Prüfung zu BUG-025 bis BUG-032 wurde anhand der Folge-Mail vorgenommen. Die aktualisierte Test-Suite besteht mit **93 von 93 Tests**. Der Release-Build ist erfolgreich. Es gab keinen Live-Test mit WASAPI-Aufnahmehardware oder einem absichtlich fehlerhaften VST3-Plugin.
 
 ## Bewertung der 24 Befunde
 
@@ -40,11 +40,30 @@ Die Test-Suite besteht mit **83 von 83 Tests**. Der Release-Build ist erfolgreic
 | BUG-023 | Bestätigt und behoben | Ein verspätetes `PlaybackStopped`-Ereignis kann nur noch den aktuell zugeordneten Player beeinflussen; Ereignisse älterer Player werden ignoriert. |
 | BUG-024 | Teilweise behoben | Mixdown und Export laufen nun per Hintergrundaufgabe statt synchron im UI-Thread. Währenddessen sind die Bedienelemente gesperrt. Normales Speichern bleibt synchron; Fortschrittsanzeige und Abbruchmöglichkeit sind nicht enthalten. |
 
+## Ergänzende Nachprüfung der Befunde 025–032
+
+| ID | Bewertung | Gegencheck und Ergebnis |
+| --- | --- | --- |
+| BUG-025 | Ressourcenrisiko bestätigt; unbegrenztes Undo bleibt absichtlich erhalten | Ein Stereo-Snapshot mit 48 kHz und Float32 benötigt rund 1,3824 GB pro Audiostunde. Das ist die direkte Folge der gewünschten unbegrenzten, dateibasierten Undo-Historie und wurde deshalb nicht durch ein willkürliches Limit ersetzt. Undo-Dateien enthalten jetzt die Prozess-ID; beim nächsten Snapshot werden Dateien beendeter Prozesse entfernt. Aktuelle Undo-Dateien werden beim Dokument-Schließen weiter gelöscht. Sehr große oder sehr lange Sitzungen können weiterhin viel freien Datenträger benötigen. |
+| BUG-026 | Bestätigt und optimiert | Der FIR-Tiefpass berechnete Sinus- und Kosinuswerte für jeden Eingangsframe erneut, obwohl die Filtergewichte nur von der Abtastratenumsetzung abhängen. Die Gewichte werden jetzt einmal pro Resampling-Aufruf vorberechnet und anschließend wiederverwendet. |
+| BUG-027 | Bestätigt und behoben | WAVEFORMATEXTENSIBLE-PCM wurde bei `validBitsPerSample != containerBits` abgelehnt. PCM mit weniger gültigen Bits als Containerbreite wird jetzt akzeptiert; Werte größer als der Container werden als ungültig abgewiesen. Die bestehende PCM-Dekodierung berücksichtigt die linksbündige Ausrichtung. Ein 24-in-32-Regressionstest prüft die Dekodierung. Abweichende gültige Bitzahlen bei IEEE-Float bleiben ungültig. |
+| BUG-028 | Bestätigt und behoben | Beim Speichern einer bearbeiteten Streaming-WAV über derselben Quelldatei blieben alte Segment-Offsets auf die nun verkürzte Datei gerichtet. Nach erfolgreichem Speichern wird das Dokument jetzt auf die geschriebene Datei und deren vollständige Timeline umgestellt. Streaming-Undo/Redo wird dabei gelöscht, weil diese Historie auf die ersetzte Quelldatei zeigte. Ein Regressionstest prüft die Audioframes nach In-Place-Speichern. |
+| BUG-029 | Verdacht auf Datenverlust durch vollen Datenträger nicht bestätigt | Vor dem Laden eines Undo-Zustands wird zunächst der aktuelle Zustand als Snapshot geschrieben. Scheitert das wegen vollem Datenträger, fängt der Undo-Pfad den Fehler ab und legt den zuvor entnommenen Undo-Eintrag zurück. Der partielle neue Snapshot wird von `CreateSnapshot` entfernt. Ein künstlicher Test mit tatsächlich vollem Datenträger wurde nicht durchgeführt. |
+| BUG-030 | Effektname war irreführend; Anzeige korrigiert | Die Implementierung begrenzt Sample-Peaks frameweise ohne Lookahead und ist kein transparenter Lookahead-Limiter. Menü und Effektanzeige nennen den Effekt jetzt „Peak-Clipper“. Die eigentliche DSP-Charakteristik bleibt unverändert. |
+| BUG-031 | Bestätigt und behoben | Effektparameter wurden vor der DSP-Berechnung nicht durchgängig auf endliche und sinnvolle Bereiche geprüft. Native Effekte und Multitrack-Insert-Prozessoren verwenden jetzt dieselbe zentrale Validierung. Tests decken NaN, Unendlich, extreme Verstärkung und Frequenzen oberhalb der Nyquist-Grenze ab. |
+| BUG-032 | Bestätigt und behoben | Beim normalen Speichern wurde 32-Bit-PCM als Float32 ausgegeben; Float64 wurde auf Float32 reduziert. Speichern in der Quell-WAV-Formatierung erhält jetzt PCM32 beziehungsweise Float64. Die WAV-Ausgabe unterstützt PCM32 und Float64 zusätzlich zu den bisherigen Formaten; Tests prüfen die erhaltene Kennzeichnung. |
+
+### Verifikation der Ergänzungen
+
+- `dotnet test tests\WellenEditor.Tests\WellenEditor.Tests.csproj --no-restore`: **93 bestanden, 0 fehlgeschlagen**.
+- `dotnet build WellenEditor.csproj -c Release --no-restore`: erfolgreich.
+- Die vorherigen Hinweise zu WASAPI-API-Veraltungen und der bestehenden `async`-Methode ohne `await` bestehen weiterhin; sie sind nicht Teil dieser Nachprüfung.
+
 ## Verifikation
 
-- `dotnet test tests\WellenEditor.Tests\WellenEditor.Tests.csproj --no-restore`: **83 bestanden, 0 fehlgeschlagen**.
+- `dotnet test tests\WellenEditor.Tests\WellenEditor.Tests.csproj --no-restore`: **93 bestanden, 0 fehlgeschlagen**.
 - `dotnet build WellenEditor.csproj -c Release --no-restore`: **erfolgreich, 0 Fehler**.
 - `git diff --check`: keine Whitespace-Fehler.
-- GitHub-Branches `main` und `feature/v0.3` zeigen beide auf `1718e84bfc8bb476eec18714291be14ac037535d`.
+- Die erste Runde wurde auf `main` und `feature/v0.3` bis `1718e84bfc8bb476eec18714291be14ac037535d` veröffentlicht. Die Ergänzungen 025–032 werden im Folgecommit der Repo-Historie dokumentiert.
 
 Der Release-Build meldet weiterhin die vorhandenen NAudio-Warnungen zu `WasapiCapture`/`WasapiOut` sowie eine schon bestehende `async`-Methode ohne `await`. Diese Warnungen wurden in diesem Audit nicht umgebaut.

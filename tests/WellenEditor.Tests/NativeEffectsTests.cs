@@ -98,6 +98,31 @@ public sealed class NativeEffectsTests
         output[2].Should().Be(0.2f);
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(1.0e100)]
+    public void EffectParametersRejectNonFiniteAndUnreasonableGain(double gainDb)
+    {
+        var process = () => NativeEffects.Process(new EffectSettings { GainDb = gainDb }, new[] { .25f }, 1, SampleRate, NativeEffectKind.Gain);
+
+        process.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void FrequencyEffectRejectsFrequencyAboveNyquist()
+    {
+        var process = () => NativeEffects.Process(new EffectSettings { Frequency = SampleRate }, new[] { .25f }, 1, SampleRate, NativeEffectKind.LowPass);
+
+        process.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public void InstantaneousLimiterIsIdentifiedAsPeakClipper()
+    {
+        NativeEffects.DisplayName(NativeEffectKind.Limiter).Should().Be("Peak-Clipper");
+    }
+
     [Fact]
     public void AudioDocumentAppliesEffectOnlyToSelectionAndSupportsUndo()
     {
