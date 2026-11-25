@@ -148,6 +148,44 @@ public sealed class BlockMixdownTests
         finally { Directory.Delete(root, true); }
     }
 
+    [Fact]
+    public void InjectedDiskWriteFailurePreservesOldDestinationAndCleansTemp()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_full_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        var target = Path.Combine(root, "mix.wav");
+        File.WriteAllText(target, "original");
+        try
+        {
+            using var sound = AudioDocument.FromSamples(new float[10000], 1, 48000);
+            var project = new MultitrackProject(); project.Add(sound);
+            Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, target, CancellationToken.None, openOutput: path => new FailingStream(path)));
+            Assert.Equal("original", File.ReadAllText(target));
+            Assert.Single(Directory.GetFiles(root));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class FailingStream(string path) : Stream
+    {
+        private readonly FileStream inner = new(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        public override bool CanRead => false;
+        public override bool CanSeek => true;
+        public override bool CanWrite => true;
+        public override long Length => inner.Length;
+        public override long Position { get => inner.Position; set => inner.Position = value; }
+        public override void Flush() => inner.Flush();
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
+        public override void SetLength(long value) => inner.SetLength(value);
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (inner.Position + count > 1024) throw new IOException("simulierter voller Datenträger");
+            inner.Write(buffer, offset, count);
+        }
+        protected override void Dispose(bool disposing) { if (disposing) inner.Dispose(); base.Dispose(disposing); }
+    }
+
     private sealed class InlineProgress(Action<double> callback) : IProgress<double>
     {
         public void Report(double value) => callback(value);

@@ -90,7 +90,7 @@ internal sealed class BlockMixdownRenderer : IDisposable
 
     public void Dispose() { foreach (var source in sources) source.Dispose(); sources.Clear(); }
 
-    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null)
+    public static void WriteWave(MultitrackProject project, string path, CancellationToken cancellationToken, IProgress<double>? progress = null, Func<string, Stream>? openOutput = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var target = Path.GetFullPath(path);
@@ -103,7 +103,8 @@ internal sealed class BlockMixdownRenderer : IDisposable
         var temp = Path.Combine(Path.GetDirectoryName(target)!, $".{Path.GetFileName(target)}.{Guid.NewGuid():N}.tmp");
         try
         {
-            using (var writer = new WaveFileWriter(temp, WaveFormat.CreateIeeeFloatWaveFormat(renderer.SampleRate, 2)))
+            using (var stream = openOutput is null ? new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None) : openOutput(temp))
+            using (var writer = new WaveFileWriter(stream, WaveFormat.CreateIeeeFloatWaveFormat(renderer.SampleRate, 2)))
             {
                 var block = new float[renderer.BlockFrames * 2];
                 long written = 0;
