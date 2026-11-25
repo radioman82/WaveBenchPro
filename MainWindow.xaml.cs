@@ -272,18 +272,24 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Mixdown_Click(object sender, RoutedEventArgs e)
+    private async void Mixdown_Click(object sender, RoutedEventArgs e)
     {
+        if (preparingMultitrack) return;
+        StopPlayback();
+        var workspace = Content as UIElement;
+        if (workspace is not null) workspace.IsEnabled = false;
+        HintText.Content = "Mehrspur-Mixdown wird gerendert…";
         try
         {
-            StopPlayback();
-            var mix = AudioDocument.FromSamples(multitrack.RenderMixdown(), 2, multitrack.SampleRate, "Mixdown.wav");
+            var samples = await Task.Run(() => multitrack.RenderMixdown());
+            var mix = AudioDocument.FromSamples(samples, 2, multitrack.SampleRate, "Mixdown.wav");
             openDocuments.Add(mix);
             ActivateDocument(mix);
             EditView_Click(sender, e);
             HintText.Content = "Mixdown erstellt – die Originalspuren bleiben unverändert.";
         }
         catch (Exception exception) { MessageBox.Show(this, $"Mixdown fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+        finally { if (workspace is not null) workspace.IsEnabled = true; }
     }
 
     private async void PlayMultitrack_Click(object sender, RoutedEventArgs e)
@@ -293,6 +299,8 @@ public partial class MainWindow : Window
         try
         {
             preparingMultitrack = true;
+            var workspace = Content as UIElement;
+            if (workspace is not null) workspace.IsEnabled = false;
             Sequencer.IsEnabled = false;
             FileList.IsEnabled = false;
             BpmText.IsEnabled = false;
@@ -318,7 +326,12 @@ public partial class MainWindow : Window
         {
             MessageBox.Show(this, $"Mehrspur-Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
-        finally { preparingMultitrack = false; Sequencer.IsEnabled = true; FileList.IsEnabled = true; BpmText.IsEnabled = true; }
+        finally
+        {
+            preparingMultitrack = false;
+            Sequencer.IsEnabled = true; FileList.IsEnabled = true; BpmText.IsEnabled = true;
+            if (Content is UIElement workspace) workspace.IsEnabled = true;
+        }
     }
 
     private void UpdateMultitrackPlaybackRange()
@@ -674,42 +687,49 @@ public partial class MainWindow : Window
 
     private void Export_Click(object sender, RoutedEventArgs e) => ExportCurrent();
 
-    private void ExportCurrent()
+    private async void ExportCurrent()
     {
         if (document is null)
         {
             HintText.Content = "Keine Datei geladen.";
             return;
         }
+        var exportDocument = document;
         var selection = Waveform.GetSelection();
-        var dialog = new ExportDialog(this, document, selection);
+        var dialog = new ExportDialog(this, exportDocument, selection);
         if (dialog.ShowDialog() != true) return;
+        StopPlayback();
+        var workspace = Content as UIElement;
+        if (workspace is not null) workspace.IsEnabled = false;
+        HintText.Content = "Export wird gerendert…";
         try
         {
-            StopPlayback();
-            switch (dialog.Format)
+            await Task.Run(() =>
             {
-                case ExportFormat.Mp3:
-                    if (dialog.ExportSelection) document.SaveRangeAsMp3(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitRate);
-                    else document.SaveAsMp3(dialog.TargetPath, dialog.BitRate);
-                    break;
-                case ExportFormat.Flac:
-                    if (dialog.ExportSelection) document.SaveRangeAsFlac(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length);
-                    else document.SaveAsFlac(dialog.TargetPath);
-                    break;
-                case ExportFormat.Ogg:
-                    if (dialog.ExportSelection) document.SaveRangeAsOgg(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
-                    else document.SaveAsOgg(dialog.TargetPath, dialog.VbrQuality);
-                    break;
-                case ExportFormat.Opus:
-                    if (dialog.ExportSelection) document.SaveRangeAsOpus(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
-                    else document.SaveAsOpus(dialog.TargetPath, dialog.VbrQuality);
-                    break;
-                default:
-                    if (dialog.ExportSelection) document.SaveRangeAsWave(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitsPerSample);
-                    else document.SaveAsWave(dialog.TargetPath, dialog.BitsPerSample);
-                    break;
-            }
+                switch (dialog.Format)
+                {
+                    case ExportFormat.Mp3:
+                        if (dialog.ExportSelection) exportDocument.SaveRangeAsMp3(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitRate);
+                        else exportDocument.SaveAsMp3(dialog.TargetPath, dialog.BitRate);
+                        break;
+                    case ExportFormat.Flac:
+                        if (dialog.ExportSelection) exportDocument.SaveRangeAsFlac(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length);
+                        else exportDocument.SaveAsFlac(dialog.TargetPath);
+                        break;
+                    case ExportFormat.Ogg:
+                        if (dialog.ExportSelection) exportDocument.SaveRangeAsOgg(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
+                        else exportDocument.SaveAsOgg(dialog.TargetPath, dialog.VbrQuality);
+                        break;
+                    case ExportFormat.Opus:
+                        if (dialog.ExportSelection) exportDocument.SaveRangeAsOpus(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
+                        else exportDocument.SaveAsOpus(dialog.TargetPath, dialog.VbrQuality);
+                        break;
+                    default:
+                        if (dialog.ExportSelection) exportDocument.SaveRangeAsWave(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitsPerSample);
+                        else exportDocument.SaveAsWave(dialog.TargetPath, dialog.BitsPerSample);
+                        break;
+                }
+            });
             HintText.Content = $"Exportiert: {Path.GetFileName(dialog.TargetPath)}";
         }
         catch (Exception exception)
@@ -717,6 +737,7 @@ public partial class MainWindow : Window
             MessageBox.Show(this, $"Der Export ist fehlgeschlagen.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
             HintText.Content = "Export fehlgeschlagen.";
         }
+        finally { if (workspace is not null) workspace.IsEnabled = true; }
     }
 
     private void Play_Click(object sender, RoutedEventArgs e)
