@@ -49,4 +49,4 @@ Die bestätigten Fälle sind korrigiert und mit Tests abgesichert. Unbegrenztes 
 - `dotnet build WellenEditor.csproj -c Release --no-restore`: **erfolgreich, 0 Fehler** (bestehende NAudio-/Async-Warnungen siehe oben).
 - `git diff --check`: **erfolgreich**.
 - Code-Commit auf `feature/v0.3`: `7580d368d4746733907d16df4f28776e5dfe8c6a`.
-- Der Ergebnisbericht wird als neue Markdown-Datei in diesem Repository mit dem Folgecommit veröffentlicht und zusätzlich in den Google-Drive-Ordner **Projekte** hochgeladen.
+- Der Ergebnisbericht ist als neue Markdown-Datei im Repository veröffentlicht und zusätzlich im Google-Drive-Ordner **Projekte** abgelegt.
