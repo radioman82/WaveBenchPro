@@ -25,6 +25,8 @@ public sealed class BufferedBlockWaveProviderTests
             Assert.Equal(1, provider.UnderrunCount);
             Assert.All(buffer, value => Assert.Equal(0, value));
             Assert.Equal(0, provider.AudioFramesRead);
+            Assert.Equal(4, provider.DeviceFramesRead);
+            Assert.Equal(0, provider.TimelineFramesRead);
         }
         finally { release.Set(); }
 
@@ -34,6 +36,7 @@ public sealed class BufferedBlockWaveProviderTests
         Assert.Equal(buffer.Length, provider.Read(buffer));
         Assert.Equal(new[] { .1f, -.1f, .2f, -.2f, .3f, -.3f, .4f, -.4f }, MemoryMarshal.Cast<byte, float>(buffer).ToArray());
         Assert.Equal(4, provider.AudioFramesRead);
+        Assert.Equal(8, provider.DeviceFramesRead);
         Assert.Equal(0, provider.Read(buffer));
     }
 
@@ -71,6 +74,52 @@ public sealed class BufferedBlockWaveProviderTests
         await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.IsType<InvalidOperationException>(provider.WorkerError);
         Assert.Equal(0, provider.Read(new byte[32]));
+    }
+
+    [Fact]
+    public async Task StopTimeoutDoesNotDisposeBlockedRendererUntilItReturns()
+    {
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var renderer = new GateRenderer(entered, release);
+        var provider = new BufferedBlockWaveProvider(renderer);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        try
+        {
+            Assert.False(await provider.StopAsync(TimeSpan.FromMilliseconds(30)));
+            Assert.False(renderer.Disposed);
+        }
+        finally { release.Set(); }
+        await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(renderer.Disposed);
+    }
+
+    [Fact]
+    public async Task CooperativeRendererReceivesCancellationAndStops()
+    {
+        var renderer = new CancellableRenderer();
+        var provider = new BufferedBlockWaveProvider(renderer);
+        Assert.True(renderer.Entered.Wait(TimeSpan.FromSeconds(2)));
+        Assert.True(await provider.StopAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(renderer.Disposed);
+        Assert.Null(provider.WorkerError);
+    }
+
+    private sealed class CancellableRenderer : ICancellableBlockAudioRenderer
+    {
+        public ManualResetEventSlim Entered { get; } = new();
+        public bool Disposed { get; private set; }
+        public int SampleRate => 48000;
+        public int BlockFrames => 4;
+        public int Read(float[] output, int frames) => throw new InvalidOperationException();
+        public int Read(float[] output, int frames, CancellationToken cancellationToken)
+        {
+            Entered.Set();
+            cancellationToken.WaitHandle.WaitOne();
+            cancellationToken.ThrowIfCancellationRequested();
+            return 0;
+        }
+        public void Dispose() => Disposed = true;
     }
 
     private sealed class FailingRenderer : IBlockAudioRenderer

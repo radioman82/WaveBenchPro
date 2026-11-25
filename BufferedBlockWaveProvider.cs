@@ -10,6 +10,11 @@ internal interface IBlockAudioRenderer : IDisposable
     int Read(float[] output, int frames);
 }
 
+internal interface ICancellableBlockAudioRenderer : IBlockAudioRenderer
+{
+    int Read(float[] output, int frames, CancellationToken cancellationToken);
+}
+
 /// <summary>Experimental SPSC playback queue; the callback reads prepared blocks only.</summary>
 internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
 {
@@ -18,7 +23,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     private readonly int[] sizes;
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task worker;
-    private long produced, consumed, underruns, audioFrames;
+    private long produced, consumed, underruns, audioFrames, deviceFrames;
     private int blockOffset;
     private int complete;
     private int disposed;
@@ -27,6 +32,9 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     public WaveFormat WaveFormat { get; }
     public long UnderrunCount => Interlocked.Read(ref underruns);
     public long AudioFramesRead => Interlocked.Read(ref audioFrames);
+    public long DeviceFramesRead => Interlocked.Read(ref deviceFrames);
+    // Underrun pauses the source timeline; the device still consumes silent frames.
+    public long TimelineFramesRead => AudioFramesRead;
     public Exception? WorkerError => Volatile.Read(ref workerError);
     internal Task Completion => worker;
 
@@ -49,17 +57,25 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                 var write = Volatile.Read(ref produced);
                 if (write - Volatile.Read(ref consumed) >= blocks.Length) { Thread.Sleep(1); continue; }
                 var slot = (int)(write % blocks.Length);
-                var count = renderer.Read(blocks[slot], renderer.BlockFrames);
+                var count = renderer is ICancellableBlockAudioRenderer cancellable
+                    ? cancellable.Read(blocks[slot], renderer.BlockFrames, cancellation.Token)
+                    : renderer.Read(blocks[slot], renderer.BlockFrames);
                 if (count == 0) break;
                 if (count < 0 || count > renderer.BlockFrames) throw new InvalidOperationException("Renderer lieferte eine ungültige Blocklänge.");
                 sizes[slot] = count * 2;
                 Volatile.Write(ref produced, write + 1);
             }
         }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
         catch (Exception exception) { Volatile.Write(ref workerError, exception); }
         finally
         {
-            try { renderer.Dispose(); } catch (Exception exception) { Volatile.Write(ref workerError, exception); }
+            try { renderer.Dispose(); }
+            catch (Exception exception)
+            {
+                var existing = Volatile.Read(ref workerError);
+                Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
+            }
             Volatile.Write(ref complete, 1);
         }
     }
@@ -81,6 +97,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                 }
                 output[written..].Clear();
                 Interlocked.Increment(ref underruns);
+                Interlocked.Add(ref deviceFrames, output.Length / 2);
                 return output.Length * sizeof(float);
             }
             var slot = (int)(read % blocks.Length);
@@ -90,11 +107,19 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             Interlocked.Add(ref audioFrames, samples / 2);
             if (blockOffset == sizes[slot]) { blockOffset = 0; Volatile.Write(ref consumed, read + 1); }
         }
+        Interlocked.Add(ref deviceFrames, written / 2);
         return written * sizeof(float);
     }
 
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposed, 1) == 0) cancellation.Cancel();
+    }
+
+    internal async Task<bool> StopAsync(TimeSpan timeout)
+    {
+        if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+        Dispose();
+        return await Task.WhenAny(worker, Task.Delay(timeout)).ConfigureAwait(false) == worker;
     }
 }
