@@ -6,7 +6,7 @@ using NAudio.Wave;
 namespace WellenEditor;
 
 /// <summary>Sequential offline mixer with per-export VST track preparation.</summary>
-internal sealed class BlockMixdownRenderer : IDisposable
+internal sealed class BlockMixdownRenderer : IBlockAudioRenderer
 {
     private sealed record Clip(IAudioSource Source, long Start);
     private sealed record Track(Clip[] Clips, TrackEffectProcessor Effects, float Left, float Right);
