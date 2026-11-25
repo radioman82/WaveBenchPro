@@ -1,4 +1,6 @@
 using WellenEditor;
+using NAudio.Wave;
+using System.IO;
 using Xunit;
 
 namespace WellenEditorTests;
@@ -118,5 +120,87 @@ public sealed class BlockStretchTests
             }
             Assert.Equal(expected.Length, offset * 2);
         }
+    }
+
+    [Fact]
+    public void StretchedResampledEditedStreamingWaveMatchesLegacyWithoutMaterializingNewPath()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench_stretch_{Guid.NewGuid():N}.wav");
+        try
+        {
+            var samples = Enumerable.Range(0, 12000).Select(i => .5f * MathF.Sin(i * .13f)).ToArray();
+            using (var writer = new WaveFileWriter(path, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1)))
+                writer.WriteSamples(samples, 0, samples.Length);
+            using var original = AudioDocument.Load(path);
+            original.Delete(new Selection(1200, 2500));
+            using var anchor = AudioDocument.FromSamples(new float[5], 1, 44100);
+            var reference = new MultitrackProject(); reference.Add(anchor); reference.Add(original);
+            reference.Tracks[1].Clips[0].DurationScale = 1.3;
+            var expected = reference.RenderMixdown();
+            using var streaming = AudioDocument.Load(path);
+            streaming.Delete(new Selection(1200, 2500));
+            var project = new MultitrackProject(); project.Add(anchor); project.Add(streaming);
+            project.Tracks[1].Clips[0].DurationScale = 1.3;
+            using var renderer = new BlockMixdownRenderer(project, 257);
+            var block = new float[514];
+            var offset = 0;
+            int read;
+            while ((read = renderer.Read(block, 257)) > 0)
+            {
+                for (var i = 0; i < read * 2; i++) Assert.InRange(Math.Abs(expected[offset * 2 + i] - block[i]), 0, 1e-6f);
+                offset += read;
+            }
+            Assert.Equal(expected.Length, offset * 2);
+            Assert.True(streaming.IsStreaming);
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
+    public void RateAndBlockSizeMatrixWithStretchMatchesLegacy()
+    {
+        int[] rates = [44100, 48000, 96000, 192000];
+        int[] blocks = [256, 1024, 4096, 8192];
+        double[] scales = [.8, 1.4];
+        var maximum = 0d;
+        var sumSquares = 0d;
+        long sampleCount = 0;
+        foreach (var projectRate in rates)
+        foreach (var sourceRate in rates)
+        foreach (var blockSize in blocks)
+        foreach (var scale in scales)
+        {
+            using var anchor = AudioDocument.FromSamples(new float[4], 1, projectRate);
+            var input = Enumerable.Range(0, 2049).SelectMany(i =>
+            {
+                var s = .3f * MathF.Sin(i * .17f) + (i == 255 || i == 1024 ? .4f : 0);
+                return new[] { s, -s * .7f };
+            }).ToArray();
+            using var sound = AudioDocument.FromSamples(input, 2, sourceRate);
+            var project = new MultitrackProject(); project.Add(anchor); project.Add(sound);
+            project.Tracks[1].StartFrame = 11;
+            project.Tracks[1].Clips[0].DurationScale = scale;
+            var expected = project.RenderMixdown();
+            using var renderer = new BlockMixdownRenderer(project, blockSize);
+            var block = new float[blockSize * 2];
+            var offset = 0;
+            int read;
+            while ((read = renderer.Read(block, blockSize)) > 0)
+            {
+                for (var i = 0; i < read * 2; i++)
+                {
+                    var difference = Math.Abs(expected[offset * 2 + i] - block[i]);
+                    maximum = Math.Max(maximum, difference);
+                    sumSquares += difference * difference;
+                    sampleCount++;
+                }
+                offset += read;
+            }
+            Assert.Equal(expected.Length, offset * 2);
+        }
+        var rms = Math.Sqrt(sumSquares / sampleCount);
+        Console.WriteLine($"128 rate/block/stretch cases: max={maximum:R}, rms={rms:R}, samples={sampleCount}");
+        Assert.InRange(maximum, 0, 1e-6);
+        Assert.InRange(rms, 0, 1e-6);
     }
 }

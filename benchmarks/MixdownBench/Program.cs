@@ -5,14 +5,15 @@ using Microsoft.Win32.SafeHandles;
 using NAudio.Wave;
 using WellenEditor;
 
-if (args.Length != 2 || (args[0] != "old" && args[0] != "block" && args[0] != "block-full") || !int.TryParse(args[1], out var seconds) || seconds < 1)
+if (args.Length != 2 || (args[0] != "old" && args[0] != "block" && args[0] != "block-full" && args[0] != "block-rate" && args[0] != "block-stretch") || !int.TryParse(args[1], out var seconds) || seconds < 1)
 {
-    Console.Error.WriteLine("Usage: MixdownBench old|block|block-full <seconds>");
+    Console.Error.WriteLine("Usage: MixdownBench old|block|block-full|block-rate|block-stretch <seconds>");
     return 2;
 }
 const int rate = 48000;
 var sourcePath = Path.Combine(Path.GetTempPath(), $"WaveBenchBenchSource_{Guid.NewGuid():N}.wav");
-if (args[0] == "block-full")
+var fullSource = args[0] is "block-full" or "block-rate" or "block-stretch";
+if (fullSource)
 {
     using var file = new FileStream(sourcePath, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read);
     if (!SparseFile.MarkSparse(file.SafeFileHandle, 0x000900C4, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero))
@@ -25,12 +26,16 @@ if (args[0] == "block-full")
     header.Write(0x61746164); header.Write(bytes); header.Flush();
     file.SetLength(44L + bytes);
 }
-using var sound = args[0] == "block-full" ? AudioDocument.Load(sourcePath) : AudioDocument.FromSamples(new float[rate * 2], 2, rate);
+using var sound = fullSource ? AudioDocument.Load(sourcePath) : AudioDocument.FromSamples(new float[rate * 2], 2, rate);
+using var rateAnchor = args[0] == "block-rate" ? AudioDocument.FromSamples(new float[2], 2, 44100) : null;
 var project = new MultitrackProject();
+if (rateAnchor is not null) { project.Add(rateAnchor); project.Tracks[0].Muted = true; }
 for (var index = 0; index < 8; index++)
 {
     project.Add(sound);
-    if (seconds > 1 && args[0] != "block-full") project.Tracks[index].Clips.Add(new MultitrackClip(sound, (long)(seconds - 1) * rate));
+    var track = project.Tracks[^1];
+    if (args[0] == "block-stretch") track.Clips[0].DurationScale = 1.05;
+    if (seconds > 1 && !fullSource) track.Clips.Add(new MultitrackClip(sound, (long)(seconds - 1) * rate));
 }
 var path = Path.Combine(Path.GetTempPath(), $"WaveBenchBench_{Guid.NewGuid():N}.wav");
 try
