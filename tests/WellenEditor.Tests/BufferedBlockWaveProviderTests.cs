@@ -139,6 +139,43 @@ public sealed class BufferedBlockWaveProviderTests
     }
 
     [Fact]
+    public async Task StopTimesOutWhenCancellationCallbackBlocksAndReleasesResourcesLater()
+    {
+        using var callbackEntered = new ManualResetEventSlim();
+        using var callbackRelease = new ManualResetEventSlim();
+        var renderer = new BlockingCancellationRenderer(callbackEntered, callbackRelease);
+        var provider = new BufferedBlockWaveProvider(renderer);
+        Assert.True(renderer.Entered.Wait(TimeSpan.FromSeconds(2)));
+        try
+        {
+            Assert.False(await provider.StopAsync(TimeSpan.FromMilliseconds(100)).WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.True(callbackEntered.Wait(TimeSpan.FromSeconds(2)));
+        }
+        finally { callbackRelease.Set(); }
+        Assert.True(await provider.StopAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(renderer.Disposed);
+    }
+
+    private sealed class BlockingCancellationRenderer(ManualResetEventSlim callbackEntered, ManualResetEventSlim callbackRelease) : ICancellableBlockAudioRenderer
+    {
+        public ManualResetEventSlim Entered { get; } = new();
+        public bool Disposed { get; private set; }
+        public int SampleRate => 48000;
+        public int BlockFrames => 4;
+        public int Read(float[] output, int frames) => throw new InvalidOperationException();
+        public int Read(float[] output, int frames, CancellationToken token)
+        {
+            using var registration = token.Register(() => { callbackEntered.Set(); callbackRelease.Wait(); });
+            Entered.Set();
+            token.WaitHandle.WaitOne();
+            callbackEntered.Wait();
+            token.ThrowIfCancellationRequested();
+            return 0;
+        }
+        public void Dispose() => Disposed = true;
+    }
+
+    [Fact]
     public async Task PartialReadThenUnderrunCountsDeviceAndTimelineSeparately()
     {
         using var entered = new ManualResetEventSlim();

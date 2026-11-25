@@ -29,6 +29,8 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     private int complete;
     private int disposed;
     private bool workerFinished;
+    private bool cancellationFinished;
+    private Task cancellationTask = Task.CompletedTask;
     private Exception? workerError;
 
     public WaveFormat WaveFormat { get; }
@@ -90,20 +92,30 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             }
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
-        catch (Exception exception) { Volatile.Write(ref workerError, exception); }
+        catch (Exception exception)
+        {
+            lock (lifetimeGate)
+            {
+                var existing = workerError;
+                Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
+            }
+        }
         finally
         {
             try { renderer.Dispose(); }
             catch (Exception exception)
             {
-                var existing = Volatile.Read(ref workerError);
-                Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
+                lock (lifetimeGate)
+                {
+                    var existing = workerError;
+                    Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
+                }
             }
             Volatile.Write(ref complete, 1);
             lock (lifetimeGate)
             {
                 workerFinished = true;
-                if (disposed != 0) cancellation.Dispose();
+                if (disposed != 0 && cancellationFinished) cancellation.Dispose();
             }
         }
     }
@@ -145,8 +157,29 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
         {
             if (disposed != 0) return;
             disposed = 1;
-            cancellation.Cancel();
-            if (workerFinished) cancellation.Dispose();
+            cancellationTask = cancellation.CancelAsync();
+        }
+        _ = FinishCancellationAsync();
+    }
+
+    private async Task FinishCancellationAsync()
+    {
+        try { await cancellationTask.ConfigureAwait(false); }
+        catch (Exception exception)
+        {
+            lock (lifetimeGate)
+            {
+                var existing = workerError;
+                Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
+            }
+        }
+        finally
+        {
+            lock (lifetimeGate)
+            {
+                cancellationFinished = true;
+                if (workerFinished) cancellation.Dispose();
+            }
         }
     }
 
@@ -154,6 +187,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     {
         if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
         Dispose();
-        return await Task.WhenAny(worker, Task.Delay(timeout)).ConfigureAwait(false) == worker;
+        var completion = Task.WhenAll(worker, cancellationTask.ContinueWith(_ => { }, TaskScheduler.Default));
+        return await Task.WhenAny(completion, Task.Delay(timeout)).ConfigureAwait(false) == completion;
     }
 }
