@@ -112,6 +112,43 @@ public sealed class RecordingEngineTests
         Assert.Equal(18, ReadSamples(recovery).Length);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BlockedWriterTimesOutPreservesFileAndAllowsRestartAfterLateCompletion(bool cancel)
+    {
+        var capture = new FakeCapture(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        string? tempPath = null;
+        using var scope = new RecordingTestScope(capture, timeout: TimeSpan.FromMilliseconds(50), sinkFactory: (path, format) =>
+        {
+            tempPath = path;
+            return new GateRecordingSink(path, format, entered, release);
+        });
+        scope.Engine.Start(null);
+        capture.Push(new[] { .5f, -.25f });
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+
+        try
+        {
+            var operation = Task.Run(() => cancel ? Record.Exception(scope.Engine.Cancel) : Record.Exception(() => scope.Engine.Finish()));
+            var error = await operation.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsType<TimeoutException>(error);
+            Assert.Contains(tempPath!, error!.Message);
+            Assert.True(File.Exists(tempPath));
+            Assert.Throws<InvalidOperationException>(() => scope.Engine.Start(null));
+        }
+        finally { release.Set(); }
+
+        await scope.Engine.PendingFinalization!.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(new[] { .5f, -.25f }, ReadSamples(tempPath!));
+        File.Delete(tempPath!);
+        scope.Engine.Start(null);
+        capture.Push(new[] { .1f, .2f });
+        Assert.Equal(new[] { .1f, .2f }, scope.Engine.Finish()!.Value.Samples);
+    }
+
     private static string AssertRecoveryFile(string message)
     {
         const string marker = "gesichert unter: ";

@@ -69,6 +69,8 @@ public sealed class RecordingEngine : IDisposable
     private IRecordingSink? recorded;
     private BlockingCollection<CaptureBlock>? captureQueue;
     private Task? captureWriterTask;
+    private Task? deferredWriterCleanup;
+    private bool disposed;
     private string? recordingPath;
     private WaveFormat? format;
     private bool isRecording;
@@ -80,6 +82,8 @@ public sealed class RecordingEngine : IDisposable
     public WaveFormat? CaptureFormat => format;
     public float LastPeak { get; private set; }
     public event EventHandler<float[]>? LevelsChanged;
+    internal Task? PendingFinalization { get { lock (writerGate) return deferredWriterCleanup; } }
+    public bool IsFinalizationPending { get { lock (writerGate) return deferredWriterCleanup is { IsCompleted: false }; } }
 
     public RecordingEngine()
         : this(CreateCapture, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "WaveBenchPro", "Recovered"), length => new float[length], TimeSpan.FromSeconds(3), (path, waveFormat) => new WaveFileRecordingSink(path, waveFormat)) { }
@@ -104,6 +108,10 @@ public sealed class RecordingEngine : IDisposable
 
     public void Start(string? deviceId)
     {
+        ObjectDisposedException.ThrowIf(disposed, this);
+        lock (writerGate)
+            if (deferredWriterCleanup is { IsCompleted: false })
+                throw new InvalidOperationException("Die vorherige Aufnahme wird noch im Hintergrund abgeschlossen. Bitte warten, bis der Datenträger wieder reagiert.");
         if (isRecording) throw new InvalidOperationException("Eine Aufnahme läuft bereits.");
         ReleaseCapture();
 
@@ -197,7 +205,7 @@ public sealed class RecordingEngine : IDisposable
         if (!isRecording) return;
         isRecording = false;
         capture?.StopRecording();
-        stopped.Wait(TimeSpan.FromSeconds(3));
+        stopped.Wait(stopTimeout);
         ReleaseCapture();
         DiscardRecordingFile();
     }
@@ -235,6 +243,8 @@ public sealed class RecordingEngine : IDisposable
     {
         var queue = captureQueue;
         if (queue is null) return;
+        try
+        {
         foreach (var item in queue.GetConsumingEnumerable())
         {
             try
@@ -262,6 +272,12 @@ public sealed class RecordingEngine : IDisposable
                 try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
             }
             finally { ArrayPool<byte>.Shared.Return(item.Buffer); }
+        }
+        }
+        finally
+        {
+            try { recorded?.Dispose(); }
+            catch (Exception exception) { SetRecordingError(exception); }
         }
     }
 
@@ -296,13 +312,32 @@ public sealed class RecordingEngine : IDisposable
     {
         lock (writerGate)
         {
+            if (deferredWriterCleanup is { IsCompleted: false })
+                throw new TimeoutException("Die vorherige Aufnahme wird noch im Hintergrund abgeschlossen.");
             Volatile.Write(ref acceptingCaptureData, 0);
             CompleteCaptureQueue();
-            try { captureWriterTask?.GetAwaiter().GetResult(); }
+            var writerTask = captureWriterTask;
+            if (writerTask is not null && Task.WhenAny(writerTask, Task.Delay(stopTimeout)).GetAwaiter().GetResult() != writerTask)
+            {
+                var path = recordingPath;
+                recordingPath = null;
+                var queue = captureQueue;
+                // The worker still uses the fields: retain them until it has finished.
+                deferredWriterCleanup = writerTask.ContinueWith(_ =>
+                {
+                    lock (writerGate)
+                    {
+                        queue?.Dispose();
+                        recorded = null;
+                        captureQueue = null;
+                        captureWriterTask = null;
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                throw new TimeoutException($"Der Datenträger antwortet nicht. Die Aufnahme wird noch im Hintergrund abgeschlossen. Die Datei bleibt erhalten unter: {path}. Erst nach Abschluss ist sie verwendbar.");
+            }
+            try { writerTask?.GetAwaiter().GetResult(); }
             catch (Exception exception) { SetRecordingError(exception); }
             captureWriterTask = null;
-            try { recorded?.Dispose(); }
-            catch (Exception exception) { SetRecordingError(exception); }
             recorded = null;
             captureQueue?.Dispose();
             captureQueue = null;
@@ -340,9 +375,19 @@ public sealed class RecordingEngine : IDisposable
 
     public void Dispose()
     {
-        if (isRecording) Cancel();
-        ReleaseCapture();
-        DiscardRecordingFile();
-        stopped.Dispose();
+        if (disposed) return;
+        disposed = true;
+        try
+        {
+            if (isRecording) Cancel();
+            ReleaseCapture();
+            DiscardRecordingFile();
+        }
+        catch (TimeoutException)
+        {
+            // The deferred cleanup owns the open file until the writer returns.
+            ReleaseCapture();
+        }
+        finally { stopped.Dispose(); }
     }
 }

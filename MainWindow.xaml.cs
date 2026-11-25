@@ -43,6 +43,7 @@ public partial class MainWindow : Window
     private long loopFrameCount;
     private readonly RecordingEngine recorder = new();
     private bool recordingStopPending;
+    private bool closeAfterRecording;
     private AudioDocument? recordingTargetDocument;
     private int recordingTargetFrame;
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
@@ -114,11 +115,18 @@ public partial class MainWindow : Window
         DragOver += (_, e) => e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
         Drop += (_, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0) OpenAudio(files[0]); };
         PreviewKeyDown += MainWindow_PreviewKeyDown;
-        Closing += (_, e) =>
+        Closing += async (_, e) =>
         {
+            if (closeAfterRecording) return;
             if (recordingStopPending)
             {
                 e.Cancel = true;
+                return;
+            }
+            if (recorder.IsFinalizationPending)
+            {
+                e.Cancel = true;
+                MessageBox.Show(this, "Die Aufnahme wird noch abgeschlossen. Bitte das Programm geöffnet lassen, bis der Datenträger wieder reagiert.", "Aufnahme", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             if (!ConfirmCloseAllDocuments())
@@ -127,6 +135,22 @@ public partial class MainWindow : Window
                 return;
             }
             StopPlayback();
+            if (recorder.IsRecording)
+            {
+                e.Cancel = true;
+                recordingStopPending = true;
+                try { await Task.Run(recorder.Cancel); }
+                catch (Exception exception)
+                {
+                    MessageBox.Show(this, exception.Message, "Aufnahme", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+                finally { recordingStopPending = false; }
+                recorder.Dispose();
+                closeAfterRecording = true;
+                Close();
+                return;
+            }
             recorder.Dispose();
         };
         playbackTimer.Tick += PlaybackTimer_Tick;
