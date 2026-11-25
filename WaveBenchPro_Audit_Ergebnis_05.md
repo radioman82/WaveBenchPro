@@ -2,6 +2,7 @@
 
 **Datum:** 25.11.2026  
 **Basis:** `be4d99dba9044955d5a04ba8380c4b9d1ebbfb9a`  
+**Code-Commit:** `0acaf93` (lokal); der GitHub-Push scheiterte an fehlender Git-Anmeldung und fehlender Schreibberechtigung der verbundenen GitHub-App.  
 **Repository:** `radioman82/WaveBenchPro`; Branches `feature/v0.3` und `main`.
 
 ## BUG-047 – blockierte Aufnahmefinalisierung
