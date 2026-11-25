@@ -66,6 +66,33 @@ public sealed class MultitrackProject
 
     public long TimelineFrames => tracks.Where(track => track.HasClip).DefaultIfEmpty().Max(track => track?.EndFrame ?? 0);
 
+    // Capture on the UI thread. Documents stay owned by the open editor; edits and
+    // closing documents stop playback before changing their backing sources.
+    internal MultitrackProject Snapshot()
+    {
+        var copy = new MultitrackProject { SampleRate = SampleRate, Bpm = Bpm, explicitTempo = explicitTempo };
+        foreach (var track in tracks)
+        {
+            var target = copy.AddEmptyTrack();
+            target.Name = track.Name; target.Gain = track.Gain; target.Pan = track.Pan;
+            target.Muted = track.Muted; target.Solo = track.Solo;
+            target.SetEffects(track.Effects.Select(effect => effect with { VstState = effect.VstState?.ToArray() }));
+            foreach (var clip in track.Clips)
+            {
+                target.SetClip(clip.Source, clip.StartFrame);
+                target.Clips[^1].DurationScale = clip.DurationScale;
+            }
+        }
+        return copy;
+    }
+
+    internal MultitrackProject IsolateTrack(MultitrackTrack track)
+    {
+        var copy = new MultitrackProject { SampleRate = SampleRate, Bpm = Bpm };
+        copy.tracks.Add(track);
+        return copy;
+    }
+
     public float[] RenderMixdown()
         => RenderMixdown(null);
 

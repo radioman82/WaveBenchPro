@@ -31,6 +31,14 @@ public sealed class ActiveClipIndexTests
         for (long position = 0; position < 20000L * 4096; position += 4096) matches += index.At(position, 4096).Count();
         watch.Stop();
         Assert.Equal(20000, matches);
-        Console.WriteLine($"20,000 clips/blocks indexed: {watch.Elapsed.TotalMilliseconds:F1} ms");
+        var indexedMs = watch.Elapsed.TotalMilliseconds;
+        watch.Restart();
+        long linearMatches = 0;
+        for (long position = 0; position < 20000L * 4096; position += 4096)
+            foreach (var clip in clips)
+                if (clip.Start < position + 4096 && clip.Start + clip.Length > position) linearMatches++;
+        watch.Stop();
+        Assert.Equal(matches, linearMatches);
+        Console.WriteLine($"20,000 clips/blocks indexed_ms={indexedMs:F1} linear_ms={watch.Elapsed.TotalMilliseconds:F1}");
     }
 }

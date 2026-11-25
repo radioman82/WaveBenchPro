@@ -13,6 +13,7 @@ internal static class BlockVstTrackRenderer
     public static void Render(string path, IReadOnlyList<Clip> clips, IReadOnlyList<TrackEffectSlot> effects, long frames, int rate, CancellationToken cancellation, VstFactory? factory = null, Action<double>? progress = null)
     {
         var resources = new List<IDisposable>();
+        Exception? primaryError = null;
         try
         {
             ISampleProvider chain = new TrackSource(clips, frames, rate);
@@ -63,7 +64,19 @@ internal static class BlockVstTrackRenderer
             }
             cancellation.ThrowIfCancellationRequested();
         }
-        finally { for (var i = resources.Count - 1; i >= 0; i--) resources[i].Dispose(); }
+        catch (Exception error) { primaryError = error; throw; }
+        finally
+        {
+            List<Exception>? errors = null;
+            for (var i = resources.Count - 1; i >= 0; i--)
+                try { resources[i].Dispose(); } catch (Exception error) { (errors ??= new()).Add(error); }
+            if (errors is not null)
+            {
+                var cleanup = new AggregateException("VST-Ressourcen konnten nicht vollständig freigegeben werden.", errors);
+                if (primaryError is null) throw cleanup;
+                primaryError.Data["MixdownCleanupError"] = cleanup.Message + " " + string.Join("; ", errors.Select(error => error.Message));
+            }
+        }
     }
 
     private sealed class TrackSource(IReadOnlyList<Clip> clips, long frames, int rate) : ISampleProvider

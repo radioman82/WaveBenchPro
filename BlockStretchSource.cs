@@ -91,9 +91,12 @@ internal sealed class BlockStretchSource : IAudioSource
             var start = checked((int)(candidate - readStart) * 2);
             for (var i = 0; i < overlap; i += 8)
             {
-                var a = output[i * 2] + output[i * 2 + 1];
-                var b = input[start + i * 2] + input[start + i * 2 + 1];
-                dot += a * b; energy += b * b;
+                for (var channel = 0; channel < 2; channel++)
+                {
+                    var a = output[i * 2 + channel];
+                    var b = input[start + i * 2 + channel];
+                    dot += a * b; energy += b * b;
+                }
             }
             var correlation = dot / Math.Sqrt(energy);
             if (correlation > score) { score = correlation; best = candidate; }

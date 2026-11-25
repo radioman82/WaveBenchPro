@@ -380,9 +380,12 @@ internal static class AudioTimeStretch
                     double dot = 0, energy = 1e-12;
                     for (var i = 0; i < overlap; i += 8)
                     {
-                        var a = output[(destination + i) * 2] + output[(destination + i) * 2 + 1];
-                        var b = stereo[(candidate + i) * 2] + stereo[(candidate + i) * 2 + 1];
-                        dot += a * b; energy += b * b;
+                        for (var channel = 0; channel < 2; channel++)
+                        {
+                            var a = output[(destination + i) * 2 + channel];
+                            var b = stereo[(candidate + i) * 2 + channel];
+                            dot += a * b; energy += b * b;
+                        }
                     }
                     var correlation = dot / Math.Sqrt(energy);
                     if (correlation > score) { score = correlation; best = candidate; }

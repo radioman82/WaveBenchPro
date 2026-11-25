@@ -19,6 +19,7 @@ public sealed class SequencerView : UserControl
     private double? rangeAnchor;
     private double? rangeEdge;
     public event Action? PlaybackRangeChanged;
+    public event Action<long>? SeekRequested;
     public (long Start, long Count)? GetPlaybackRange()
     {
         if (project is null || rangeAnchor is null || rangeEdge is null || rangeAnchor == rangeEdge) return null;
@@ -32,6 +33,7 @@ public sealed class SequencerView : UserControl
     public event Action<MultitrackTrack>? EffectsRequested;
     public double PositionSeconds
     {
+        get => positionSeconds;
         set
         {
             positionSeconds = Math.Max(0, value);
@@ -269,6 +271,13 @@ public sealed class SequencerView : UserControl
                 if (selectingRange)
                 {
                     selectingRange = false;
+                    if (rangeDrag == RangeDrag.Create && owner.rangeAnchor == owner.rangeEdge && owner.project is { } project)
+                    {
+                        var frame = (long)Math.Max(0, Math.Round(e.GetPosition(this).X / PixelsPerSecond * project.SampleRate));
+                        owner.PositionSeconds = frame / (double)project.SampleRate;
+                        owner.SeekRequested?.Invoke(frame);
+                        ReleaseMouseCapture(); RefreshDrawing(); e.Handled = true; return;
+                    }
                     ReleaseMouseCapture(); RefreshDrawing(); owner.PlaybackRangeChanged?.Invoke(); e.Handled = true; return;
                 }
                 if (moving is null) return;

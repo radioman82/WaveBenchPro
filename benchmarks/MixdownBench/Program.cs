@@ -5,6 +5,12 @@ using Microsoft.Win32.SafeHandles;
 using NAudio.Wave;
 using WellenEditor;
 
+if (args.Length == 2 && args[0] == "vst-check") return PlaybackMeasurements.CheckVst(args[1]);
+if (args.Length == 2 && args[0] == "compare") return PlaybackMeasurements.CompareMusic(args[1]);
+if (args.Length == 1 && args[0] == "symlink-check") return PlaybackMeasurements.CheckSymlink();
+if (args.Length == 2 && args[0] == "playback" && int.TryParse(args[1], out var playbackSeconds))
+    return await PlaybackMeasurements.Run(playbackSeconds);
+
 if (args.Length != 2 || (args[0] != "old" && args[0] != "block" && args[0] != "block-full" && args[0] != "block-rate" && args[0] != "block-stretch" && args[0] != "independent") || !int.TryParse(args[1], out var seconds) || seconds < 1)
 {
     Console.Error.WriteLine("Usage: MixdownBench old|block|block-full|block-rate|block-stretch <seconds>");

@@ -15,12 +15,21 @@ internal interface ICancellableBlockAudioRenderer : IBlockAudioRenderer
     int Read(float[] output, int frames, CancellationToken cancellationToken);
 }
 
+internal interface IPositionedBlockRenderer
+{
+    long Position { get; }
+}
+
 /// <summary>Experimental SPSC playback queue; the callback reads prepared blocks only.</summary>
 internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
 {
     private readonly IBlockAudioRenderer renderer;
     private readonly float[][] blocks;
     private readonly int[] sizes;
+    private readonly long[] starts;
+    private readonly long[] timelineHistory;
+    private readonly long initialFrame;
+    private readonly AutoResetEvent spaceAvailable = new(false);
     private readonly CancellationTokenSource cancellation = new();
     private readonly Task worker;
     private readonly object lifetimeGate = new();
@@ -31,6 +40,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     private bool workerFinished;
     private bool cancellationFinished;
     private Task cancellationTask = Task.CompletedTask;
+    private Task cancellationCompletion = Task.CompletedTask;
     private Exception? workerError;
 
     public WaveFormat WaveFormat { get; }
@@ -42,6 +52,13 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     public Exception? WorkerError => Volatile.Read(ref workerError);
     internal Task Completion => worker;
     internal int Capacity => blocks.Length;
+    internal long AudibleFrame(int latencyFrames)
+    {
+        var total = DeviceFramesRead;
+        if (total == 0) return initialFrame;
+        var frame = Math.Max(0, total - 1 - Math.Clamp(latencyFrames, 0, timelineHistory.Length - 1));
+        return Interlocked.Read(ref timelineHistory[frame % timelineHistory.Length]);
+    }
 
     /// <summary>Prepares blocks outside the audio callback; false indicates timeout.</summary>
     internal async Task<bool> PrefillAsync(int minimumBlocks, TimeSpan timeout, CancellationToken token = default)
@@ -70,6 +87,9 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
         WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(renderer.SampleRate, 2);
         blocks = Enumerable.Range(0, capacity).Select(_ => new float[checked(renderer.BlockFrames * 2)]).ToArray();
         sizes = new int[capacity];
+        starts = new long[capacity];
+        timelineHistory = new long[checked(renderer.SampleRate * 2)];
+        initialFrame = renderer is IPositionedBlockRenderer positioned ? positioned.Position : 0;
         worker = Task.Run(Produce);
     }
 
@@ -80,8 +100,13 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             while (!cancellation.IsCancellationRequested)
             {
                 var write = Volatile.Read(ref produced);
-                if (write - Volatile.Read(ref consumed) >= blocks.Length) { Thread.Sleep(1); continue; }
+                if (write - Volatile.Read(ref consumed) >= blocks.Length)
+                {
+                    WaitHandle.WaitAny(new[] { spaceAvailable, cancellation.Token.WaitHandle });
+                    continue;
+                }
                 var slot = (int)(write % blocks.Length);
+                starts[slot] = renderer is IPositionedBlockRenderer positioned ? positioned.Position : write * renderer.BlockFrames;
                 var count = renderer is ICancellableBlockAudioRenderer cancellable
                     ? cancellable.Read(blocks[slot], renderer.BlockFrames, cancellation.Token)
                     : renderer.Read(blocks[slot], renderer.BlockFrames);
@@ -136,6 +161,11 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                     continue;
                 }
                 output[written..].Clear();
+                var device = DeviceFramesRead;
+                var last = written > 0 ? Interlocked.Read(ref timelineHistory[(device + written / 2 - 1) % timelineHistory.Length])
+                    : device > 0 ? Interlocked.Read(ref timelineHistory[(device - 1) % timelineHistory.Length]) : initialFrame;
+                for (var frame = written / 2; frame < output.Length / 2; frame++)
+                    Interlocked.Exchange(ref timelineHistory[(device + frame) % timelineHistory.Length], last);
                 Interlocked.Increment(ref underruns);
                 Interlocked.Add(ref deviceFrames, output.Length / 2);
                 return output.Length * sizeof(float);
@@ -143,9 +173,18 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             var slot = (int)(read % blocks.Length);
             var samples = Math.Min(output.Length - written, sizes[slot] - blockOffset);
             blocks[slot].AsSpan(blockOffset, samples).CopyTo(output[written..]);
+            var deviceOffset = DeviceFramesRead + written / 2;
+            for (var frame = 0; frame < samples / 2; frame++)
+                Interlocked.Exchange(ref timelineHistory[(deviceOffset + frame) % timelineHistory.Length], starts[slot] + blockOffset / 2 + frame);
             written += samples; blockOffset += samples;
             Interlocked.Add(ref audioFrames, samples / 2);
-            if (blockOffset == sizes[slot]) { blockOffset = 0; Volatile.Write(ref consumed, read + 1); }
+            if (blockOffset == sizes[slot])
+            {
+                blockOffset = 0; Volatile.Write(ref consumed, read + 1);
+                // SafeWaitHandle closes the event after the queue is unreachable.
+                // An in-flight callback may still use it after producer completion.
+                spaceAvailable.Set();
+            }
         }
         Interlocked.Add(ref deviceFrames, written / 2);
         return written * sizeof(float);
@@ -158,8 +197,8 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             if (disposed != 0) return;
             disposed = 1;
             cancellationTask = cancellation.CancelAsync();
+            cancellationCompletion = FinishCancellationAsync();
         }
-        _ = FinishCancellationAsync();
     }
 
     private async Task FinishCancellationAsync()
@@ -187,7 +226,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     {
         if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
         Dispose();
-        var completion = Task.WhenAll(worker, cancellationTask.ContinueWith(_ => { }, TaskScheduler.Default));
+        var completion = Task.WhenAll(worker, cancellationCompletion);
         return await Task.WhenAny(completion, Task.Delay(timeout)).ConfigureAwait(false) == completion;
     }
 }

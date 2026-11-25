@@ -327,7 +327,14 @@
       <MenuItem Header="_Effekte"><MenuItem Header="Amplitude"><MenuItem Header="Verstärken..." Click="Gain_Click"/><MenuItem Header="Normalisieren..." Click="Normalize_Click"/><MenuItem Header="Einblenden" Click="FadeIn_Click"/><MenuItem Header="Ausblenden" Click="FadeOut_Click"/></MenuItem><MenuItem Header="Filter"><MenuItem Header="Hochpass..." Click="HighPass_Click"/><MenuItem Header="Tiefpass..." Click="LowPass_Click"/><MenuItem Header="Equalizer..." Click="Equalizer_Click"/></MenuItem><MenuItem Header="Dynamik"><MenuItem Header="Kompressor..." Click="Compressor_Click"/><MenuItem Header="Peak-Clipper..." Click="Limiter_Click"/></MenuItem><MenuItem Header="Rauschminderung" IsEnabled="False"/><Separator/><MenuItem Header="VST3-Effekte neu scannen" Click="ScanVst_Click"/></MenuItem>
       <MenuItem Header="_Aufnahme"><MenuItem Header="Aufnahme starten/stoppen" Click="Record_Click"/></MenuItem>
       <MenuItem Header="_Analyse"><MenuItem Header="Spektrogramm anzeigen" IsCheckable="True" IsChecked="{Binding IsChecked, ElementName=SpectrogramMenuItem, Mode=TwoWay}" Click="SpectrogramToggle_Click"/><MenuItem Header="Pegelanzeige anzeigen" IsCheckable="True" IsChecked="{Binding IsChecked, ElementName=MeterMenuItem, Mode=TwoWay}" Click="MeterToggle_Click"/></MenuItem>
-      <MenuItem Header="_Optionen"><MenuItem Header="Audio-Hardware..." Click="AudioHardware_Click"/></MenuItem>
+      <MenuItem Header="_Optionen"><MenuItem Header="Audio-Hardware..." Click="AudioHardware_Click"/>
+        <MenuItem x:Name="BlockPlaybackMenuItem" Header="Mehrspur: neue Wiedergabe (experimentell)" IsCheckable="True" Click="BlockPlaybackToggle_Click"/>
+        <MenuItem Header="Mehrspur-Wiedergabepuffer">
+          <MenuItem Header="4 Blöcke" Tag="4" Click="BlockBuffer_Click"/>
+          <MenuItem Header="8 Blöcke (Standard)" Tag="8" Click="BlockBuffer_Click"/>
+          <MenuItem Header="16 Blöcke" Tag="16" Click="BlockBuffer_Click"/>
+        </MenuItem>
+      </MenuItem>
       <MenuItem Header="_Fenster" IsEnabled="False"/><MenuItem Header="_Hilfe"><MenuItem Header="Info zu WaveBench Pro" Click="About_Click"/></MenuItem>
     </Menu></Border>
 

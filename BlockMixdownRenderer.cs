@@ -209,17 +209,24 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
         catch (Exception exception) { primaryError = exception; throw; }
         finally
         {
+            List<Exception>? cleanupErrors = null;
+            var details = new List<string>();
             try { renderer.Dispose(); }
             catch (Exception cleanupError)
             {
-                if (primaryError is null) throw new IOException("Mehrspurquellen konnten nach dem Export nicht vollständig freigegeben werden.", cleanupError);
-                primaryError.Data["MixdownCleanupError"] = $"Freigabe der Mehrspurquellen fehlgeschlagen: {cleanupError.Message}";
+                (cleanupErrors ??= new()).Add(cleanupError);
+                details.Add($"Freigabe der Mehrspurquellen fehlgeschlagen: {cleanupError.Message}");
             }
             try { if (File.Exists(temp)) (deleteTemp ?? File.Delete)(temp); }
             catch (Exception cleanupError)
             {
-                if (primaryError is null) throw new IOException($"Temporäre Mixdown-Datei konnte nicht entfernt werden: {temp}", cleanupError);
-                primaryError.Data["MixdownCleanupError"] = $"{primaryError.Data["MixdownCleanupError"]} Temporäre Datei blieb erhalten: {temp}; {cleanupError.Message}".Trim();
+                (cleanupErrors ??= new()).Add(cleanupError);
+                details.Add($"Temporäre Datei blieb erhalten: {temp}; {cleanupError.Message}");
+            }
+            if (cleanupErrors is not null)
+            {
+                if (primaryError is null) throw new IOException(string.Join(" ", details), new AggregateException(cleanupErrors));
+                primaryError.Data["MixdownCleanupError"] = $"{primaryError.Data["MixdownCleanupError"]} {string.Join(" ", details)}".Trim();
             }
         }
     }

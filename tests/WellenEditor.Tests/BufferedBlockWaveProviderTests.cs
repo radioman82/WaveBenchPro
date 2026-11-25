@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.IO;
 using WellenEditor;
 using Xunit;
 
@@ -107,6 +108,38 @@ public sealed class BufferedBlockWaveProviderTests
         await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => provider.PrefillAsync(1, TimeSpan.FromSeconds(2)));
         Assert.IsType<InvalidOperationException>(error.InnerException);
+    }
+
+    [Fact]
+    public async Task FailureAfterPrefillAndDisposeFailureBothRemainVisible()
+    {
+        using var failNow = new ManualResetEventSlim();
+        using var entered = new ManualResetEventSlim();
+        using var provider = new BufferedBlockWaveProvider(new LateFailingRenderer(entered, failNow), 2);
+        Assert.True(await provider.PrefillAsync(1, TimeSpan.FromSeconds(2)));
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        failNow.Set();
+        await provider.Completion.WaitAsync(TimeSpan.FromSeconds(2));
+        var error = Assert.IsType<AggregateException>(provider.WorkerError);
+        Assert.Equal(2, error.InnerExceptions.Count);
+        Assert.Equal(32, provider.Read(new byte[32]));
+        Assert.Equal(0, provider.Read(new byte[32]));
+        Assert.Same(error, provider.WorkerError);
+    }
+
+    private sealed class LateFailingRenderer(ManualResetEventSlim entered, ManualResetEventSlim failNow) : IBlockAudioRenderer
+    {
+        private int reads;
+        public int SampleRate => 48000;
+        public int BlockFrames => 4;
+        public int Read(float[] buffer, int frames)
+        {
+            if (++reads == 1) return frames;
+            entered.Set();
+            if (!failNow.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException();
+            throw new IOException("injected render error");
+        }
+        public void Dispose() => throw new IOException("injected dispose error");
     }
 
     [Fact]
