@@ -25,6 +25,7 @@ public sealed class WavFileAudioSource : IAudioSource
     private int blockAlign;    // Bytes pro Frame (Channels * BitsPerSample / 8)
     private short formatTag;   // effektiver Format-Tag (bei Extensible aus der SubFormat-GUID)
     private byte[]? decodeBuffer;
+    private bool disposed;
 
     public int SampleRate { get; private set; }
     public int Channels { get; private set; }
@@ -156,6 +157,7 @@ public sealed class WavFileAudioSource : IAudioSource
 
         lock (readLock)
         {
+            ObjectDisposedException.ThrowIf(disposed, this);
             int framesRead = 0;
             while (framesRead < framesToRead)
             {
@@ -230,5 +232,13 @@ public sealed class WavFileAudioSource : IAudioSource
         }
     }
 
-    public void Dispose() => stream.Dispose();
+    public void Dispose()
+    {
+        lock (readLock)
+        {
+            if (disposed) return;
+            disposed = true;
+            stream.Dispose();
+        }
+    }
 }

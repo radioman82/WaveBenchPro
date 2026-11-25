@@ -124,6 +124,31 @@ public sealed class AudioDocumentTests
     }
 
     [Fact]
+    public void UndoSnapshotWriteFailureKeepsCurrentSamplesAndRestoresHistoryEntry()
+    {
+        var failWrites = false;
+        string WriteSnapshot(float[] samples)
+        {
+            if (failWrites) throw new IOException("injected snapshot I/O failure");
+            var path = Path.Combine(Path.GetTempPath(), $"wavebench_snapshot_test_{Guid.NewGuid():N}.bin");
+            File.WriteAllBytes(path, System.Runtime.InteropServices.MemoryMarshal.AsBytes(samples.AsSpan()).ToArray());
+            return path;
+        }
+
+        using var document = AudioDocument.FromSamplesForSnapshotTest(new[] { .1f, .2f }, 1, 48000, WriteSnapshot);
+        document.ReplaceFrames(0, new[] { .7f, .8f }, 2);
+        failWrites = true;
+
+        Assert.Throws<IOException>(() => document.Undo());
+        Assert.True(document.CanUndo);
+        Assert.Equal(new[] { .7f, .8f }, document.Samples);
+
+        failWrites = false;
+        document.Undo();
+        Assert.Equal(new[] { .1f, .2f }, document.Samples);
+    }
+
+    [Fact]
     public void LoopingWaveProviderRepeatsWithoutEndingAtClipBoundary()
     {
         var source = new ArrayWaveProvider(new[] { .25f, -.25f }, 0, 2, WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));

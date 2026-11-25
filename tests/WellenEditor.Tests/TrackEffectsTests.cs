@@ -1,10 +1,72 @@
 using WellenEditor;
+using NAudio.Vst3;
 using Xunit;
 
 namespace WellenEditorTests;
 
 public sealed class TrackEffectsTests
 {
+    [Fact]
+    public void OrderedVstAndNativeEffectsProcessTheOverlappedTrackAndMatchMixdown()
+    {
+        using var sound = AudioDocument.FromSamples(new[] { .25f, .25f }, 2, 1000);
+        var project = new MultitrackProject();
+        project.Add(sound);
+        var track = project.Tracks[0];
+        track.Clips.Add(new MultitrackClip(sound, 0));
+        var vst = TrackEffectSlot.ForVst(FakeVst());
+        var gain = new TrackEffectSlot(Guid.NewGuid(), NativeEffectKind.Gain, new EffectSettings { GainDb = 20 * Math.Log10(2) });
+        TrackEffectChainRenderer.VstRenderer clipper = (_, input, _) => input.Select(value => Math.Clamp(value, -.6f, .6f)).ToArray();
+
+        track.SetEffects(new[] { gain, vst });
+        var gainThenVst = ReadFirstSample(new MultitrackWaveProvider(project, clipper));
+        var gainThenVstMix = project.RenderMixdown(clipper)[0];
+
+        track.SetEffects(new[] { vst, gain });
+        var vstThenGain = ReadFirstSample(new MultitrackWaveProvider(project, clipper));
+        var vstThenGainMix = project.RenderMixdown(clipper)[0];
+
+        Assert.Equal(.6f, gainThenVst, 5);
+        Assert.Equal(gainThenVst, gainThenVstMix, 5);
+        Assert.Equal(1f, vstThenGain, 5);
+        Assert.Equal(vstThenGain, vstThenGainMix, 5);
+    }
+
+    [Fact]
+    public void VstStateChangesDuringPlaybackPublishNewTrackAudioWithoutRestart()
+    {
+        using var sound = AudioDocument.FromSamples(Enumerable.Repeat(.1f, 4000).ToArray(), 1, 1000);
+        var project = new MultitrackProject();
+        project.Add(sound);
+        var track = project.Tracks[0];
+        var slot = TrackEffectSlot.ForVst(FakeVst(), new byte[] { 2 });
+        track.SetEffects(new[] { slot });
+        TrackEffectChainRenderer.VstRenderer stateGain = (effect, input, _) =>
+            input.Select(value => value * effect.VstState![0]).ToArray();
+        var provider = new MultitrackWaveProvider(project, stateGain);
+        provider.ConfigurePlayback(0, provider.FrameCount, true);
+        Assert.Equal(.2f, ReadFirstSample(provider), 5);
+
+        track.SetEffects(new[] { slot with { VstState = new byte[] { 3 } } });
+        provider.UpdateTrackEffects(track);
+        var changed = SpinWait.SpinUntil(() => Math.Abs(ReadFirstSample(provider) - .3f) < .00001f, TimeSpan.FromSeconds(3));
+
+        Assert.True(changed, "der aktualisierte VST-State muss während der laufenden Schleife hörbar werden");
+    }
+
+    private static Vst3EffectDescriptor FakeVst()
+    {
+        var classInfo = new Vst3ClassInfo("fake-class-id", "Audio Module Class", "Fake", "Tests", "1", "", "Fx");
+        return new Vst3EffectDescriptor("Fake", "Tests", "fake.vst3", classInfo, "Fx");
+    }
+
+    private static float ReadFirstSample(MultitrackWaveProvider provider)
+    {
+        var bytes = new byte[sizeof(float) * 2];
+        var read = provider.Read(bytes, 0, bytes.Length);
+        return read == 0 ? 0 : System.Runtime.InteropServices.MemoryMarshal.Cast<byte, float>(bytes)[0];
+    }
+
     [Fact]
     public void TrackInsertIsIsolatedLiveBypassableAndNonDestructive()
     {

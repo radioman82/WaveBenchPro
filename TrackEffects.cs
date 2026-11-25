@@ -71,3 +71,57 @@ internal sealed class TrackEffectProcessor
         }
     }
 }
+
+/// <summary>Offline track-wide FX chain used when a track contains VST3 inserts.</summary>
+internal static class TrackEffectChainRenderer
+{
+    internal delegate float[] VstRenderer(TrackEffectSlot slot, float[] input, int sampleRate);
+
+    public static float[] Process(
+        float[] input,
+        IReadOnlyList<TrackEffectSlot> effects,
+        int sampleRate,
+        Action<string> reportWarning,
+        VstRenderer? vstRenderer = null)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(effects);
+        ArgumentNullException.ThrowIfNull(reportWarning);
+        if (input.Length % 2 != 0) throw new ArgumentException("Das Spur-Audio muss stereo sein.", nameof(input));
+
+        var result = input;
+        foreach (var effect in effects)
+        {
+            if (!effect.Enabled) continue;
+            if (effect.Vst is not null)
+            {
+                try
+                {
+                    var render = vstRenderer ?? RenderVst;
+                    var processed = render(effect, result, sampleRate);
+                    if (processed.Length != result.Length)
+                    {
+                        reportWarning($"VST3-Effekt '{effect.Vst.DisplayName}' lieferte eine unerwartete Ausgabelänge; Effekt wurde übersprungen.");
+                        continue;
+                    }
+                    result = processed;
+                }
+                catch (Exception exception)
+                {
+                    reportWarning($"VST3-Effekt '{effect.Vst.DisplayName}' konnte nicht angewendet werden ({exception.Message}); Effekt wurde übersprungen.");
+                }
+                continue;
+            }
+
+            var native = new TrackEffectProcessor(new[] { effect }, sampleRate);
+            native.Process(result);
+        }
+        return result;
+    }
+
+    private static float[] RenderVst(TrackEffectSlot effect, float[] input, int sampleRate)
+    {
+        var provider = new ArraySampleProvider(input, NAudio.Wave.WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 2));
+        return Vst3OfflineRenderer.Render(effect.Vst!, provider, sampleRate, 2, input.Length / 2, effect.VstState);
+    }
+}

@@ -6,6 +6,63 @@ namespace WellenEditorTests;
 public sealed class SequencerTests
 {
     [Fact]
+    public void RemovingAndAddingTracksDoesNotReuseTrackNumbers()
+    {
+        var project = new MultitrackProject();
+        var first = project.AddEmptyTrack();
+        var second = project.AddEmptyTrack();
+        var third = project.AddEmptyTrack();
+
+        project.Remove(second);
+        var fourth = project.AddEmptyTrack();
+
+        Assert.Equal(new[] { 1, 3, 4 }, project.Tracks.Select(track => track.Number));
+        Assert.NotEqual(first.Number, fourth.Number);
+        Assert.NotEqual(third.Number, fourth.Number);
+    }
+
+    [Fact]
+    public void RepeatedTempoRoundTripsDoNotAccumulateWholeFrameDrift()
+    {
+        using var source = AudioDocument.FromSamples(new float[200], 1, 44100);
+        var project = new MultitrackProject();
+        project.Add(source);
+        project.Tracks[0].StartFrame = 98765;
+
+        for (var iteration = 0; iteration < 500; iteration++)
+        {
+            project.SetBpm(140);
+            project.SetBpm(120);
+        }
+
+        Assert.InRange(Math.Abs(project.Tracks[0].StartFrame - 98765), 0, 1);
+        Assert.Equal(1, project.Tracks[0].Clips[0].DurationScale, 8);
+    }
+
+    [Fact]
+    public void WaveformZoomClampsBeforeConvertingLargeFrameCountsToInt()
+    {
+        Assert.Equal(int.MaxValue, WaveformView.ScaledViewportFrames(int.MaxValue, 1.65, int.MaxValue));
+        Assert.Equal(1, WaveformView.ScaledViewportFrames(1, .6, int.MaxValue));
+    }
+
+    [Theory]
+    [InlineData(.1)]
+    [InlineData(10)]
+    public void ShortStretchedStereoClipsKeepTheirTailAndChannelRelationship(double scale)
+    {
+        var source = Enumerable.Range(0, 20).SelectMany(frame => new[] { frame / 20f, -frame / 20f }).ToArray();
+
+        var stretched = AudioTimeStretch.Stretch(source, scale);
+
+        Assert.Equal(checked((int)Math.Max(1, Math.Round(20 * scale)) * 2), stretched.Length);
+        Assert.All(stretched, sample => Assert.True(float.IsFinite(sample)));
+        for (var frame = 0; frame < stretched.Length / 2; frame++)
+            Assert.Equal(stretched[frame * 2], -stretched[frame * 2 + 1], 6);
+        Assert.Equal(source[^2], stretched[^2], 6);
+    }
+
+    [Fact]
     public void NativeLoopRepeatsAndAcceptsLiveRangeChangesWithoutRestart()
     {
         using var sound = AudioDocument.FromSamples(Enumerable.Range(0, 20).Select(i => i / 100f).ToArray(), 1, 1000);

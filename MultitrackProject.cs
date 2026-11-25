@@ -7,6 +7,7 @@ namespace WellenEditor;
 public sealed class MultitrackProject
 {
     private readonly List<MultitrackTrack> tracks = new();
+    private int nextTrackNumber = 1;
 
     public IReadOnlyList<MultitrackTrack> Tracks => tracks;
     public int SampleRate { get; private set; } = 44100;
@@ -18,12 +19,12 @@ public sealed class MultitrackProject
     {
         ArgumentNullException.ThrowIfNull(source);
         if (tracks.Count == 0) SampleRate = source.SampleRate;
-        tracks.Add(new MultitrackTrack(source, tracks.Count + 1, SampleRate));
+        tracks.Add(new MultitrackTrack(source, nextTrackNumber++, SampleRate));
     }
 
     public MultitrackTrack AddEmptyTrack()
     {
-        var track = new MultitrackTrack(null, tracks.Count + 1, SampleRate);
+        var track = new MultitrackTrack(null, nextTrackNumber++, SampleRate);
         tracks.Add(track);
         return track;
     }
@@ -65,13 +66,16 @@ public sealed class MultitrackProject
     public long TimelineFrames => tracks.Where(track => track.HasClip).DefaultIfEmpty().Max(track => track?.EndFrame ?? 0);
 
     public float[] RenderMixdown()
+        => RenderMixdown(null);
+
+    internal float[] RenderMixdown(TrackEffectChainRenderer.VstRenderer? vstRenderer)
     {
         var solo = tracks.Any(track => track.Solo && track.HasClip);
         var audible = tracks.Where(track => track.HasClip && !track.Muted && (!solo || track.Solo)).ToArray();
         if (audible.Length == 0) throw new InvalidOperationException("Keine hörbare Spur vorhanden.");
         var frames = audible.Max(track => track.EndFrame);
         var result = new float[checked((int)(frames * 2))];
-        var provider = new MultitrackWaveProvider(this);
+        var provider = new MultitrackWaveProvider(this, vstRenderer);
         provider.Read(System.Runtime.InteropServices.MemoryMarshal.AsBytes(result.AsSpan()));
         return result;
     }

@@ -158,7 +158,7 @@ public sealed class WaveformView : FrameworkElement
     {
         var previous = viewportStart;
         if (frame < viewportStart) viewportStart = frame;
-        else if (frame > viewportStart + viewportFrames) viewportStart = frame - viewportFrames;
+        else if (frame > (long)viewportStart + viewportFrames) viewportStart = frame - viewportFrames;
         viewportStart = Math.Clamp(viewportStart, 0, Math.Max(0, FrameCount - viewportFrames));
         return viewportStart != previous;
     }
@@ -311,7 +311,7 @@ public sealed class WaveformView : FrameworkElement
         }
         var anchor = FrameAt(e.GetPosition(this).X);
         var factor = e.Delta > 0 ? 0.6 : 1.65;
-        var nextFrames = Math.Clamp((int)(viewportFrames * factor), 1, FrameCount);
+        var nextFrames = ScaledViewportFrames(viewportFrames, factor, FrameCount);
         var relative = (anchor - viewportStart) / (double)Math.Max(1, viewportFrames);
         viewportStart = Math.Clamp(anchor - (int)(relative * nextFrames), 0, Math.Max(0, FrameCount - nextFrames));
         viewportFrames = nextFrames;
@@ -323,7 +323,7 @@ public sealed class WaveformView : FrameworkElement
     {
         if (FrameCount == 0) return;
         var anchor = viewportStart + viewportFrames / 2;
-        var nextFrames = Math.Clamp((int)(viewportFrames * factor), 1, FrameCount);
+        var nextFrames = ScaledViewportFrames(viewportFrames, factor, FrameCount);
         viewportStart = Math.Clamp(anchor - nextFrames / 2, 0, Math.Max(0, FrameCount - nextFrames));
         viewportFrames = nextFrames;
         InvalidateBaseDrawing();
@@ -334,6 +334,9 @@ public sealed class WaveformView : FrameworkElement
         verticalZoom = Math.Clamp(verticalZoom * factor, 0.25, 16);
         InvalidateBaseDrawing();
     }
+
+    internal static int ScaledViewportFrames(int currentFrames, double factor, int totalFrames) =>
+        (int)Math.Clamp(Math.Round(currentFrames * factor), 1d, totalFrames);
 
     private int FrameCount => timelineFrameCount;
 

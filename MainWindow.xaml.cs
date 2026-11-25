@@ -42,6 +42,7 @@ public partial class MainWindow : Window
     private long loopStartFrame;
     private long loopFrameCount;
     private readonly RecordingEngine recorder = new();
+    private bool recordingStopPending;
     private AudioDocument? recordingTargetDocument;
     private int recordingTargetFrame;
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
@@ -80,7 +81,12 @@ public partial class MainWindow : Window
             var dialog = new TrackEffectsWindow(this, track,
                 () => { multitrackMixer?.UpdateTrackEffects(track); Sequencer.SetProject(multitrack); },
                 () => { if (!isPlaying) PlayMultitrack_Click(this, new RoutedEventArgs()); },
-                StopPlayback, vstEffects);
+                StopPlayback, vstEffects,
+                livePlugin =>
+                {
+                    if (livePlugin is null) StopPreview();
+                    else StartLiveVstPreview(livePlugin, MultitrackWaveProvider.RenderTrackDry(track, track.ProjectSampleRate), track.ProjectSampleRate);
+                });
             dialog.ShowDialog();
             Sequencer.SetProject(multitrack);
         };
@@ -110,6 +116,11 @@ public partial class MainWindow : Window
         PreviewKeyDown += MainWindow_PreviewKeyDown;
         Closing += (_, e) =>
         {
+            if (recordingStopPending)
+            {
+                e.Cancel = true;
+                return;
+            }
             if (!ConfirmCloseAllDocuments())
             {
                 e.Cancel = true;
@@ -815,13 +826,18 @@ public partial class MainWindow : Window
         if (!recorder.IsRecording) ResetLevel();
     }
 
-    private void Record_Click(object sender, RoutedEventArgs e)
+    private async void Record_Click(object sender, RoutedEventArgs e)
     {
+        if (recordingStopPending) return;
         try
         {
             if (recorder.IsRecording)
             {
-                var finished = recorder.Finish();
+                recordingStopPending = true;
+                RecordButton.IsEnabled = false;
+                var finished = await Task.Run(recorder.Finish);
+                recordingStopPending = false;
+                RecordButton.IsEnabled = true;
                 recorder.LevelsChanged -= Recorder_LevelChanged;
                 RecordButton.Content = "●";
                 RecordButton.ToolTip = "Aufnahme starten/stoppen (Strg+R)";
@@ -875,12 +891,16 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
+            var wasStoppingRecording = recordingStopPending;
+            recordingStopPending = false;
+            RecordButton.IsEnabled = true;
             recorder.Cancel();
             recordingTargetDocument = null;
             recorder.LevelsChanged -= Recorder_LevelChanged;
             RecordButton.Content = "●";
             ResetLevel();
-            MessageBox.Show(this, $"Die Aufnahme konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            var operation = wasStoppingRecording ? "Die Aufnahme konnte nicht abgeschlossen werden." : "Die Aufnahme konnte nicht gestartet werden.";
+            MessageBox.Show(this, $"{operation}\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -1250,19 +1270,33 @@ public partial class MainWindow : Window
             if (written <= 0) return;
             Array.Resize(ref stereo, written * 2);
 
-            StopPlayback();   // Hauptwiedergabe aus (ruft auch StopPreview auf)
-            StopPreview();    // evtl. laufende Live-/Offline-Vorschau stoppen
+            StartLiveVstPreview(livePlugin, stereo, document.SampleRate);
+        }
+        catch (Exception exception)
+        {
+            StopPreview();
+            MessageBox.Show(this, $"Die Live-Vorschau konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
 
-            var loop = new LoopingSampleProvider(stereo, 2, document.SampleRate);
+    private void StartLiveVstPreview(Vst3Plugin livePlugin, float[] stereo, int sampleRate)
+    {
+        try
+        {
+            if (stereo.Length == 0) return;
+            StopPlayback();
+            StopPreview();
+            var frames = stereo.Length / 2;
+            var loop = new LoopingSampleProvider(stereo, 2, sampleRate);
             var effect = new Vst3EffectSampleProvider(loop, livePlugin)
             {
-                RenderTail = false,          // Live: kein Tail-Render, Endlosschleife läuft eh
+                RenderTail = false,
                 CompensateLatency = true
             };
             previewPlayer = CreatePlayer();
             previewPlayer.Init(effect);
             previewPlayer.Play();
-            HintText.Content = $"Live-Vorschau: {frames / (double)document.SampleRate:F1}s Schleife durch das Plugin – Regler wirken sofort. Nochmal 'Live ▶' oder Dialog schließen stoppt.";
+            HintText.Content = $"Live-Vorschau: {frames / (double)sampleRate:F1}s Schleife durch das Plugin – Regler wirken sofort. Dialog schließen stoppt.";
         }
         catch (Exception exception)
         {

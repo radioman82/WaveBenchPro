@@ -3,6 +3,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
 using System.Windows.Media;
+using NAudio.Vst3;
 
 namespace WellenEditor;
 
@@ -10,12 +11,14 @@ internal sealed class TrackEffectsWindow : Window
 {
     private readonly MultitrackTrack track;
     private readonly Action publish, play, stop;
+    private readonly Action<Vst3Plugin?>? livePreview;
     private readonly IReadOnlyList<Vst3EffectDescriptor> vstEffects;
     private readonly StackPanel rows = new();
 
-    public TrackEffectsWindow(Window owner, MultitrackTrack track, Action publish, Action play, Action stop, IReadOnlyList<Vst3EffectDescriptor>? vstEffects = null)
+    public TrackEffectsWindow(Window owner, MultitrackTrack track, Action publish, Action play, Action stop, IReadOnlyList<Vst3EffectDescriptor>? vstEffects = null, Action<Vst3Plugin?>? livePreview = null)
     {
         Owner = owner; this.track = track; this.publish = publish; this.play = play; this.stop = stop;
+        this.livePreview = livePreview;
         this.vstEffects = vstEffects ?? Array.Empty<Vst3EffectDescriptor>();
         Title = $"Spur-Effekte – {track.Name}"; Width = 600; Height = 460; MinWidth = 540; MinHeight = 300;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -57,6 +60,11 @@ internal sealed class TrackEffectsWindow : Window
         try
         {
             var dialog = new VstPluginDialog(this, slot.Vst, track.ProjectSampleRate);
+            dialog.LivePreviewRequested += plugin =>
+            {
+                if (plugin is null) livePreview?.Invoke(null);
+                else livePreview?.Invoke(plugin);
+            };
             if (dialog.LoadErrorText is not null) { dialog.ShowDialog(); if (adding) track.SetEffects(before); }
             else if (dialog.ShowDialog() == true) track.SetEffects(track.Effects.Select(fx => fx.Id == slot.Id ? fx with { VstState = dialog.ResultState } : fx));
             else if (adding) track.SetEffects(before);

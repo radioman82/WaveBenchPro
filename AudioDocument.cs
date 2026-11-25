@@ -11,6 +11,7 @@ public sealed class AudioDocument : IDisposable
 {
     private const int WaveformPreviewFrames = 8192;
     private static int orphanUndoCleanupDone;
+    private readonly Func<float[], string> snapshotWriter;
 
     private sealed record AudioSnapshot(string Path);
     private readonly Stack<AudioSnapshot> undoHistory = new();
@@ -22,12 +23,17 @@ public sealed class AudioDocument : IDisposable
     private List<AudioSourceSegment>? streamingSegments;
     private readonly Stack<List<AudioSourceSegment>> streamingUndoHistory = new();
     private readonly Stack<List<AudioSourceSegment>> streamingRedoHistory = new();
+    private readonly object peakCacheGate = new();
     private CancellationTokenSource? peakCacheCancellation;
+    private long peakCacheGeneration;
     private CancellationTokenSource? spectrogramCancellation;
+    private readonly object spectrogramGate = new();
+    private long spectrogramGeneration;
     private bool spectrogramBuilding;
 
-    private AudioDocument(string sourcePath, float[] samples, int channels, int sampleRate)
+    private AudioDocument(string sourcePath, float[] samples, int channels, int sampleRate, Func<float[], string>? snapshotWriter = null)
     {
+        this.snapshotWriter = snapshotWriter ?? WriteSnapshot;
         SourcePath = sourcePath;
         this.samples = samples;
         waveformSamples = samples;
@@ -39,6 +45,7 @@ public sealed class AudioDocument : IDisposable
 
     private AudioDocument(string sourcePath, WavFileAudioSource source, float[] preview)
     {
+        snapshotWriter = WriteSnapshot;
         SourcePath = sourcePath;
         samples = Array.Empty<float>();
         waveformSamples = preview;
@@ -91,6 +98,14 @@ public sealed class AudioDocument : IDisposable
         if (samples.Length == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
         if (samples.Length % channels != 0) throw new ArgumentException("Die Sample-Anzahl ist kein Vielfaches der Kanalanzahl.", nameof(samples));
         return new AudioDocument(sourcePath ?? string.Empty, samples, channels, sampleRate);
+    }
+
+    internal static AudioDocument FromSamplesForSnapshotTest(float[] samples, int channels, int sampleRate, Func<float[], string> snapshotWriter)
+    {
+        ArgumentNullException.ThrowIfNull(snapshotWriter);
+        if (samples.Length == 0) throw new InvalidDataException("Die Audiodatei enthält keine Samples.");
+        if (channels < 1 || samples.Length % channels != 0) throw new ArgumentException("Ungültige Kanalanzahl oder Sampleanzahl.");
+        return new AudioDocument(string.Empty, samples, channels, sampleRate, snapshotWriter);
     }
 
     public static AudioDocument Load(string path)
@@ -175,8 +190,7 @@ public sealed class AudioDocument : IDisposable
         streamingSegments = null;
         streamingUndoHistory.Clear();
         streamingRedoHistory.Clear();
-        peakCacheCancellation?.Cancel();
-        PeakCache = null;
+        InvalidatePeakCache();
     }
 
     private static float[] BuildWaveformPreview(IAudioSource source)
@@ -199,30 +213,57 @@ public sealed class AudioDocument : IDisposable
         if (streamingWavPath is null || streamingFrameCount == 0) return;
         var path = streamingWavPath;
         var segments = streamingSegments!.ToArray();
-        peakCacheCancellation = new CancellationTokenSource();
-        var cancellation = peakCacheCancellation;
+        CancellationTokenSource cancellation;
+        long generation;
+        lock (peakCacheGate)
+        {
+            peakCacheCancellation?.Cancel();
+            peakCacheCancellation = cancellation = new CancellationTokenSource();
+            generation = ++peakCacheGeneration;
+        }
+        var token = cancellation.Token;
         _ = Task.Run(() =>
         {
             try
             {
                 using var source = new SegmentedAudioSource(new WavFileAudioSource(path), segments);
-                var cache = WaveformPeakCache.Build(source, cancellation.Token);
-                if (cancellation.IsCancellationRequested) return;
-                PeakCache = cache;
-                PeakCacheReady?.Invoke(this, EventArgs.Empty);
+                var cache = WaveformPeakCache.Build(source, token);
+                var publish = false;
+                lock (peakCacheGate)
+                {
+                    if (!token.IsCancellationRequested && generation == peakCacheGeneration)
+                    {
+                        PeakCache = cache;
+                        publish = true;
+                    }
+                }
+                if (publish) PeakCacheReady?.Invoke(this, EventArgs.Empty);
             }
             catch (OperationCanceledException) { }
             catch { /* Die sofortige Vorschau bleibt bei fehlerhaften Hintergrund-Scans nutzbar. */ }
+            finally
+            {
+                lock (peakCacheGate)
+                    if (ReferenceEquals(peakCacheCancellation, cancellation)) peakCacheCancellation = null;
+                cancellation.Dispose();
+            }
         });
     }
 
     internal void RequestSpectrogram()
     {
-        if (Spectrogram is not null || spectrogramBuilding || FrameCount == 0) return;
-        spectrogramBuilding = true;
-        spectrogramCancellation?.Cancel();
-        spectrogramCancellation = new CancellationTokenSource();
-        var cancellation = spectrogramCancellation;
+        if (FrameCount == 0) return;
+        CancellationTokenSource cancellation;
+        long generation;
+        lock (spectrogramGate)
+        {
+            if (Spectrogram is not null || spectrogramBuilding) return;
+            spectrogramCancellation?.Cancel();
+            spectrogramCancellation = cancellation = new CancellationTokenSource();
+            generation = ++spectrogramGeneration;
+            spectrogramBuilding = true;
+        }
+        var token = cancellation.Token;
         var path = streamingWavPath;
         var segments = streamingSegments?.ToArray();
         var memory = streamingWavPath is null ? samples : null;
@@ -233,15 +274,30 @@ public sealed class AudioDocument : IDisposable
                 using IAudioSource source = path is not null
                     ? new SegmentedAudioSource(new WavFileAudioSource(path), segments!)
                     : new MemoryAudioSource(memory!, Channels, SampleRate);
-                var cache = SpectrogramCache.Build(source, cancellation.Token);
-                if (!cancellation.IsCancellationRequested)
+                var cache = SpectrogramCache.Build(source, token);
+                var publish = false;
+                lock (spectrogramGate)
                 {
-                    Spectrogram = cache;
-                    SpectrogramReady?.Invoke(this, EventArgs.Empty);
+                    if (generation == spectrogramGeneration && !token.IsCancellationRequested)
+                    {
+                        Spectrogram = cache;
+                        publish = true;
+                    }
                 }
+                if (publish)
+                    SpectrogramReady?.Invoke(this, EventArgs.Empty);
             }
             catch (OperationCanceledException) { }
-            finally { spectrogramBuilding = false; }
+            catch { /* Das Spektrogramm ist optional; die Wellenform bleibt verfügbar. */ }
+            finally
+            {
+                lock (spectrogramGate)
+                {
+                    if (generation == spectrogramGeneration) spectrogramBuilding = false;
+                    if (ReferenceEquals(spectrogramCancellation, cancellation)) spectrogramCancellation = null;
+                }
+                cancellation.Dispose();
+            }
         });
     }
 
@@ -268,8 +324,7 @@ public sealed class AudioDocument : IDisposable
 
     private void RefreshStreamingVisuals()
     {
-        peakCacheCancellation?.Cancel();
-        PeakCache = null;
+        InvalidatePeakCache();
         InvalidateSpectrogram();
         using (var source = CreateSegmentedSource()) waveformSamples = BuildWaveformPreview(source);
         PeakCacheReady?.Invoke(this, EventArgs.Empty);
@@ -294,10 +349,20 @@ public sealed class AudioDocument : IDisposable
 
     public void Dispose()
     {
-        peakCacheCancellation?.Cancel();
-        peakCacheCancellation?.Dispose();
-        spectrogramCancellation?.Cancel();
-        spectrogramCancellation?.Dispose();
+        lock (peakCacheGate)
+        {
+            ++peakCacheGeneration;
+            peakCacheCancellation?.Cancel();
+            peakCacheCancellation?.Dispose();
+            peakCacheCancellation = null;
+        }
+        lock (spectrogramGate)
+        {
+            ++spectrogramGeneration;
+            spectrogramBuilding = false;
+            spectrogramCancellation?.Cancel();
+            spectrogramCancellation?.Dispose();
+        }
         ClearSnapshots(undoHistory);
         ClearSnapshots(redoHistory);
     }
@@ -872,7 +937,9 @@ public sealed class AudioDocument : IDisposable
         catch { /* Cleanup must never block an edit when temp storage is unavailable. */ }
     }
 
-    private static AudioSnapshot CreateSnapshot(float[] audio)
+    private AudioSnapshot CreateSnapshot(float[] audio) => new(snapshotWriter(audio));
+
+    private static string WriteSnapshot(float[] audio)
     {
         CleanupOrphanedSnapshots();
         var path = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Undo_{Environment.ProcessId}_{Guid.NewGuid():N}.bin");
@@ -880,7 +947,7 @@ public sealed class AudioDocument : IDisposable
         {
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.SequentialScan);
             stream.Write(MemoryMarshal.AsBytes(audio.AsSpan()));
-            return new AudioSnapshot(path);
+            return path;
         }
         catch
         {
@@ -914,8 +981,23 @@ public sealed class AudioDocument : IDisposable
 
     private void InvalidateSpectrogram()
     {
-        spectrogramCancellation?.Cancel();
-        Spectrogram = null;
+        lock (spectrogramGate)
+        {
+            ++spectrogramGeneration;
+            spectrogramBuilding = false;
+            spectrogramCancellation?.Cancel();
+            Spectrogram = null;
+        }
+    }
+
+    private void InvalidatePeakCache()
+    {
+        lock (peakCacheGate)
+        {
+            ++peakCacheGeneration;
+            peakCacheCancellation?.Cancel();
+            PeakCache = null;
+        }
     }
 }
 

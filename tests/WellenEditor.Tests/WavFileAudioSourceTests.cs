@@ -253,6 +253,31 @@ public sealed class WavFileAudioSourceTests : IDisposable
     }
 
     [Fact]
+    public void ConcurrentReadsSerializeSharedFilePositionAndDecodeBuffer()
+    {
+        const int frames = 32_000;
+        var path = CreateTempWav(3, channels: 2, sampleRate: 48000, bits: 32, Float32Data(frames, 2));
+        using var source = new WavFileAudioSource(path);
+        var results = new float[8][];
+
+        Parallel.For(0, results.Length, index =>
+        {
+            var start = index * 3072;
+            var buffer = new float[2048 * 2];
+            source.ReadFrames(start, buffer, 0, 2048).Should().Be(2048);
+            results[index] = buffer;
+        });
+
+        for (var index = 0; index < results.Length; index++)
+        {
+            var sourceIndex = index * 3072 * 2;
+            for (var frame = 0; frame < 2048; frame++)
+            for (var channel = 0; channel < 2; channel++)
+                results[index][frame * 2 + channel].Should().BeApproximately(((((sourceIndex + frame * 2 + channel) % 100) / 200f) - .25f), 1e-7f);
+        }
+    }
+
+    [Fact]
     public void ReadFramesRejectsInvalidArguments()
     {
         string path = CreateTempWav(1, 1, 8000, 16, Pcm16Data(10, 1));
