@@ -132,6 +132,16 @@ public sealed class AudioDocument : IDisposable
         return LoadDecodedSoundFile(fullPath, reader, reader.WaveFormat);
     }
 
+    // Offline diagnostics need source data, without concurrent UI waveform jobs
+    // contaminating disk, CPU and memory measurements.
+    internal static AudioDocument OpenWaveForProcessing(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        using var source = new WavFileAudioSource(fullPath);
+        if (source.FrameCount is <= 0 or > int.MaxValue) throw new NotSupportedException("Ungültige WAV-Länge.");
+        return new AudioDocument(fullPath, source, Array.Empty<float>());
+    }
+
     private static AudioDocument LoadDecodedSoundFile(string path, ISampleProvider reader, WaveFormat waveFormat)
     {
         var samples = new List<float>();

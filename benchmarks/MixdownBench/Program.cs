@@ -8,6 +8,10 @@ using WellenEditor;
 if (args.Length == 2 && args[0] == "vst-check") return PlaybackMeasurements.CheckVst(args[1]);
 if (args.Length == 2 && args[0] == "compare") return PlaybackMeasurements.CompareMusic(args[1]);
 if (args.Length == 1 && args[0] == "symlink-check") return PlaybackMeasurements.CheckSymlink();
+if (args.Length == 1 && args[0] == "controls") return await PlaybackAcceptanceMeasurements.MeasureControls();
+if (args.Length == 1 && args[0] == "device-check") return await PlaybackAcceptanceMeasurements.CheckDevicesAndCapture();
+if (args.Length == 2 && args[0] == "prepare" && int.TryParse(args[1], out var preparationSeconds))
+    return MeasureIndependent(preparationSeconds, prepare: true);
 if (args.Length == 2 && args[0] == "playback" && int.TryParse(args[1], out var playbackSeconds))
     return await PlaybackMeasurements.Run(playbackSeconds);
 
@@ -71,11 +75,13 @@ try
 }
 finally { sound.Dispose(); if (File.Exists(path)) File.Delete(path); if (File.Exists(sourcePath)) File.Delete(sourcePath); }
 
-static int MeasureIndependent(int seconds)
+static int MeasureIndependent(int seconds, bool prepare = false)
 {
+    if (seconds < 1 || seconds > 3600) throw new ArgumentOutOfRangeException(nameof(seconds));
     const int sampleRate = 48000;
-    var directory = Path.Combine(Path.GetTempPath(), $"WaveBenchIndependent_{Guid.NewGuid():N}");
-    var required = checked((long)seconds * sampleRate * 8 * 9 + 2L * 1024 * 1024 * 1024);
+    var benchmarkRoot = Environment.GetEnvironmentVariable("WAVEBENCH_BENCH_DIRECTORY") ?? Path.GetTempPath();
+    var directory = Path.Combine(Path.GetFullPath(benchmarkRoot), $"WaveBenchIndependent_{Guid.NewGuid():N}");
+    var required = checked((long)seconds * sampleRate * 8 * (prepare ? 16 : 9) + 2L * 1024 * 1024 * 1024);
     if (new DriveInfo(Path.GetPathRoot(directory)!).AvailableFreeSpace < required)
         throw new IOException($"Benchmark requires at least {required} free bytes.");
     Directory.CreateDirectory(directory);
@@ -101,7 +107,26 @@ static int MeasureIndependent(int seconds)
             }
         }
         var project = new MultitrackProject();
-        foreach (var source in paths) { var document = AudioDocument.Load(source); documents.Add(document); project.Add(document); }
+        foreach (var source in paths) { var document = AudioDocument.OpenWaveForProcessing(source); documents.Add(document); project.Add(document); }
+        if (prepare)
+        {
+            for (var pass = 0; pass < 2; pass++)
+            {
+                if (pass == 1)
+                    project.Tracks[0].SetEffects(new[] { new TrackEffectSlot(Guid.NewGuid(), NativeEffectKind.HighPass, new EffectSettings { Frequency = 200 }) });
+                using var preparationProcess = Process.GetCurrentProcess();
+                var cpuStart = preparationProcess.TotalProcessorTime;
+                var timer = Stopwatch.StartNew();
+                using (var session = new PreparedMultitrackSession(project.Snapshot(), project.Tracks))
+                {
+                    timer.Stop(); preparationProcess.Refresh();
+                    Console.WriteLine($"mode=prepare pass={pass + 1} seconds={seconds} tracks=8 changed_tracks={pass} elapsed_ms={timer.Elapsed.TotalMilliseconds:F0} cpu_s={(preparationProcess.TotalProcessorTime - cpuStart).TotalSeconds:F3} peak_working_set_bytes={preparationProcess.PeakWorkingSet64} prepared_disk_bytes={session.PreparedBytes} source_bytes={paths.Sum(p => new FileInfo(p).Length)}");
+                    session.Dispose();
+                    session.Completion.GetAwaiter().GetResult();
+                }
+            }
+            return 0;
+        }
         var target = Path.Combine(directory, "output.wav");
         var watch = Stopwatch.StartNew();
         BlockMixdownRenderer.WriteWave(project, target, CancellationToken.None);
