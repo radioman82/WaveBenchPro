@@ -77,6 +77,11 @@ internal static class HardwareMeasurements08
                     callback_p50_upper_us = meter.Percentile(.50), callback_p95_upper_us = meter.Percentile(.95), callback_p99_upper_us = meter.Percentile(.99),
                     callback_allocated_bytes = meter.Allocations }, Json));
             }
+            // Compare restart resources to an initialized, fully stopped/collected device,
+            // not process startup before CLR/COM/audio driver lazy initialization.
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            await Task.Delay(250); measuredProcess.Refresh();
+            var handlesWarm = measuredProcess.HandleCount;
             var stoppedCycles = 0;
             var handleCheckpoints = new List<object>();
             for (var cycle = 0; cycle < request.Cycles; cycle++)
@@ -94,8 +99,15 @@ internal static class HardwareMeasurements08
             var sourceError = source.WorkerError;
             if (sourceError is not null) throw sourceError;
             session.Dispose(); await session.Completion.WaitAsync(TimeSpan.FromSeconds(3));
+            measuredProcess.Refresh();
+            var handlesAfter = measuredProcess.HandleCount;
+            // Diagnostic only, after hardware/worker teardown. Never collect in the audio path.
+            GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
+            await Task.Delay(250); measuredProcess.Refresh();
             Console.WriteLine(JsonSerializer.Serialize(new { result = "cleanup_completed", cycles = stoppedCycles,
-                underruns_total = source.UnderrunCount, handles_before = handlesBefore, handles_after = measuredProcess.HandleCount, handle_checkpoints = handleCheckpoints,
+                underruns_total = source.UnderrunCount, handles_before = handlesBefore, handles_after = handlesAfter,
+                handles_after_first_device_diagnostic_gc = handlesWarm,
+                handles_after_diagnostic_gc = measuredProcess.HandleCount, handle_checkpoints = handleCheckpoints,
                 worker_error = "none", session_cleanup = "completed" }, Json));
             return source.UnderrunCount == 0 && meter.Allocations == 0 ? 0 : 1;
         }

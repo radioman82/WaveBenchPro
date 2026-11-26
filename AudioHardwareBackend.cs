@@ -117,6 +117,7 @@ internal sealed class WasapiPlayback : IAudioPlayback
     private readonly string mixDescription;
     private int sourceRate;
     private bool initialized;
+    private bool nativeDisposed;
     private HardwareReadAhead? readAhead;
     public WasapiPlayback(AudioDeviceConfiguration configuration)
     {
@@ -175,7 +176,13 @@ internal sealed class WasapiPlayback : IAudioPlayback
     public void Play() => player.Play();
     public void Stop() => player.Stop();
     public void Pause() => player.Pause();
-    public void Dispose() { player.PlaybackStopped -= OnStopped; try { player.Dispose(); } finally { try { readAhead?.DrainAndDispose(); } finally { device.Dispose(); } } }
+    public void Dispose()
+    {
+        // A failing native close must retain its producer and endpoint for a later retry.
+        if (!nativeDisposed) { player.Dispose(); nativeDisposed = true; player.PlaybackStopped -= OnStopped; }
+        readAhead?.DrainAndDispose();
+        device.Dispose();
+    }
 }
 
 internal sealed class AsioPlayback : IAudioPlayback
@@ -185,6 +192,7 @@ internal sealed class AsioPlayback : IAudioPlayback
     private readonly AudioControlThread control = new();
     private CountingProvider? source;
     private PlaybackState state;
+    private bool nativeDisposed;
     private HardwareReadAhead? readAhead;
     public long ReadAheadUnderruns => readAhead?.Underruns ?? 0;
     public Exception? SourceError => readAhead?.Error;
@@ -233,7 +241,16 @@ internal sealed class AsioPlayback : IAudioPlayback
     public void Play() { control.Invoke(device.Start); state = PlaybackState.Playing; }
     public void Stop() { control.Invoke(device.Stop); state = PlaybackState.Stopped; }
     public void Pause() { Stop(); state = PlaybackState.Paused; }
-    public void Dispose() { device.Stopped -= OnStopped; device.DriverResetRequest -= OnReset; try { control.Invoke(device.Dispose); } finally { try { readAhead?.DrainAndDispose(); } finally { control.Dispose(); } } }
+    public void Dispose()
+    {
+        if (!nativeDisposed)
+        {
+            control.Invoke(device.Dispose); nativeDisposed = true;
+            device.Stopped -= OnStopped; device.DriverResetRequest -= OnReset;
+        }
+        readAhead?.DrainAndDispose();
+        control.Dispose();
+    }
     private sealed class CountingProvider(IWaveProvider input) : IWaveProvider
     {
         private long frames;

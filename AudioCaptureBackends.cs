@@ -11,6 +11,7 @@ internal sealed class WasapiRecordingCapture : ISpanRecordingCapture
     private readonly WasapiRecorder recorder;
     private readonly AudioDeviceConfiguration configuration;
     private readonly string deviceId, deviceName;
+    private bool nativeDisposed;
     public WasapiRecordingCapture(AudioDeviceConfiguration configuration)
     {
         this.configuration = configuration;
@@ -22,8 +23,11 @@ internal sealed class WasapiRecordingCapture : ISpanRecordingCapture
                 .WithBufferLength(configuration.BufferMilliseconds).WithEventSync().WithMmcssThreadPriority("Pro Audio");
             if (configuration.Backend == AudioBackendKind.WasapiLoopback) builder.WithLoopbackCapture();
             if (configuration.SampleRate != 0)
+            {
+                using var client = device.CreateAudioClient();
                 builder.WithFormat(WaveFormat.CreateIeeeFloatWaveFormat(configuration.SampleRate,
-                    configuration.Channels.Length == 0 ? 2 : configuration.Channels.Length));
+                    client.MixFormat.Channels));
+            }
             recorder = builder.Build();
             recorder.DataAvailable += OnData;
             recorder.RecordingStopped += OnStopped;
@@ -43,7 +47,14 @@ internal sealed class WasapiRecordingCapture : ISpanRecordingCapture
     public void StartRecording() => recorder.StartRecording();
     public void StopRecording() => recorder.StopRecording();
     public void Dispose()
-    { recorder.DataAvailable -= OnData; recorder.RecordingStopped -= OnStopped; try { recorder.Dispose(); } finally { device.Dispose(); } }
+    {
+        if (!nativeDisposed)
+        {
+            recorder.Dispose(); nativeDisposed = true;
+            recorder.DataAvailable -= OnData; recorder.RecordingStopped -= OnStopped;
+        }
+        device.Dispose();
+    }
 }
 
 internal sealed class AsioRecordingCapture : ISpanRecordingCapture
@@ -53,6 +64,7 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
     private readonly AudioDeviceConfiguration configuration;
     private readonly byte[] interleaved;
     private int discontinuity;
+    private bool nativeDisposed;
     public AsioRecordingCapture(AudioDeviceConfiguration configuration)
     {
         this.configuration = configuration;
@@ -97,5 +109,13 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
     public void StartRecording() => control.Invoke(device.Start);
     public void StopRecording() => control.Invoke(device.Stop);
     public void Dispose()
-    { device.AudioCaptured -= OnCaptured; device.Stopped -= OnStopped; device.DriverResetRequest -= OnReset; device.ResyncOccurred -= OnResync; try { control.Invoke(device.Dispose); } finally { control.Dispose(); } }
+    {
+        if (!nativeDisposed)
+        {
+            control.Invoke(device.Dispose); nativeDisposed = true;
+            device.AudioCaptured -= OnCaptured; device.Stopped -= OnStopped;
+            device.DriverResetRequest -= OnReset; device.ResyncOccurred -= OnResync;
+        }
+        control.Dispose();
+    }
 }
