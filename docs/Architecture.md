@@ -32,7 +32,7 @@ Recording uses a dedicated writer and bounded queue. Overflow stops capture and 
 
 ## Build and packaging
 
-Version: v0.3.0-beta.1. global.json pins the SDK; packages.lock.json pins application dependency resolution.
+Version: v0.3.0-beta.2. global.json pins the SDK; packages.lock.json pins application dependency resolution.
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\Publish-Portable.ps1

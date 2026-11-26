@@ -1,4 +1,6 @@
-# v0.3.0-beta.1 — draft
+# v0.3.0-beta.1 — superseded draft
+
+Do not use this draft: its UI file export fails with a WPF thread-access error. It is preserved for traceability and superseded by beta.2.
 
 Windows 11 x64 portable development beta. This is an unsigned draft pending hardware acceptance, clean-machine checks and the licensing decisions in [LicenseStatus.md](LicenseStatus.md). It is not yet approved for redistribution.
 

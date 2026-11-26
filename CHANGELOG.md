@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0-beta.2 — unreleased draft
+
+- Fixed file export reading WPF dialog controls from a background thread.
+- Retains all beta.1 features and the same acceptance/licensing gates.
+- Supersedes the unapproved beta.1 draft; its tag is preserved unchanged.
+
 ## 0.3.0-beta.1 — unreleased draft
 
 - Optional prepared multitrack playback with private disk files and bounded queues.

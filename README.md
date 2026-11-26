@@ -8,7 +8,7 @@ A Windows audio editor with a classic waveform workspace and a multitrack sequen
 
 ## Download and start
 
-See [GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) for existing development snapshots and their notes. The proposed **v0.3.0-beta.1 is a draft**, pending acceptance and licensing decisions. Older snapshots can differ from this source tree.
+See [GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) for existing development snapshots and their notes. The proposed **v0.3.0-beta.2 is a draft**, pending acceptance and licensing decisions. Older snapshots can differ from this source tree.
 
 Extract the entire portable ZIP into a writable folder and run **WaveBenchPro.exe**. Keep companion files and license notices together. The self-contained package includes the .NET runtime; users do not need the SDK. Builds are currently unsigned.
 

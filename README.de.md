@@ -8,7 +8,7 @@ Windows-Audioeditor mit klassischer Wellenformansicht und Mehrspur-Sequenzer. En
 
 ## Download und Start
 
-[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.1 wird als Entwurf vorbereitet**; Abnahme und Lizenzfreigabe stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen.
+[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.2 wird als Entwurf vorbereitet**; Abnahme und Lizenzfreigabe stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen.
 
 Das portable ZIP vollständig in einen beschreibbaren Ordner entpacken und **WaveBenchPro.exe** starten. Begleitdateien und Lizenzhinweise zusammenlassen. Die .NET-Laufzeit ist enthalten; zum Start wird kein SDK benötigt. Die Builds sind derzeit nicht signiert.
 

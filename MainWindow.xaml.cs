@@ -945,6 +945,13 @@ public partial class MainWindow : Window
         var selection = Waveform.GetSelection();
         var dialog = new ExportDialog(this, exportDocument, selection);
         if (dialog.ShowDialog() != true) return;
+        // Snapshot WPF control values on their dispatcher before rendering off-thread.
+        var format = dialog.Format;
+        var exportSelection = dialog.ExportSelection;
+        var targetPath = dialog.TargetPath;
+        var bitRate = dialog.BitRate;
+        var vbrQuality = dialog.VbrQuality;
+        var bitsPerSample = dialog.BitsPerSample;
         StopPlayback();
         var workspace = Content as UIElement;
         if (workspace is not null) workspace.IsEnabled = false;
@@ -953,31 +960,31 @@ public partial class MainWindow : Window
         {
             await Task.Run(() =>
             {
-                switch (dialog.Format)
+                switch (format)
                 {
                     case ExportFormat.Mp3:
-                        if (dialog.ExportSelection) exportDocument.SaveRangeAsMp3(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitRate);
-                        else exportDocument.SaveAsMp3(dialog.TargetPath, dialog.BitRate);
+                        if (exportSelection) exportDocument.SaveRangeAsMp3(targetPath, selection!.Value.StartSample, selection.Value.Length, bitRate);
+                        else exportDocument.SaveAsMp3(targetPath, bitRate);
                         break;
                     case ExportFormat.Flac:
-                        if (dialog.ExportSelection) exportDocument.SaveRangeAsFlac(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length);
-                        else exportDocument.SaveAsFlac(dialog.TargetPath);
+                        if (exportSelection) exportDocument.SaveRangeAsFlac(targetPath, selection!.Value.StartSample, selection.Value.Length);
+                        else exportDocument.SaveAsFlac(targetPath);
                         break;
                     case ExportFormat.Ogg:
-                        if (dialog.ExportSelection) exportDocument.SaveRangeAsOgg(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
-                        else exportDocument.SaveAsOgg(dialog.TargetPath, dialog.VbrQuality);
+                        if (exportSelection) exportDocument.SaveRangeAsOgg(targetPath, selection!.Value.StartSample, selection.Value.Length, vbrQuality);
+                        else exportDocument.SaveAsOgg(targetPath, vbrQuality);
                         break;
                     case ExportFormat.Opus:
-                        if (dialog.ExportSelection) exportDocument.SaveRangeAsOpus(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.VbrQuality);
-                        else exportDocument.SaveAsOpus(dialog.TargetPath, dialog.VbrQuality);
+                        if (exportSelection) exportDocument.SaveRangeAsOpus(targetPath, selection!.Value.StartSample, selection.Value.Length, vbrQuality);
+                        else exportDocument.SaveAsOpus(targetPath, vbrQuality);
                         break;
                     default:
-                        if (dialog.ExportSelection) exportDocument.SaveRangeAsWave(dialog.TargetPath, selection!.Value.StartSample, selection.Value.Length, dialog.BitsPerSample);
-                        else exportDocument.SaveAsWave(dialog.TargetPath, dialog.BitsPerSample);
+                        if (exportSelection) exportDocument.SaveRangeAsWave(targetPath, selection!.Value.StartSample, selection.Value.Length, bitsPerSample);
+                        else exportDocument.SaveAsWave(targetPath, bitsPerSample);
                         break;
                 }
             });
-            HintText.Content = $"Exportiert: {Path.GetFileName(dialog.TargetPath)}";
+            HintText.Content = $"Exportiert: {Path.GetFileName(targetPath)}";
         }
         catch (Exception exception)
         {
