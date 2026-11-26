@@ -97,6 +97,30 @@ public sealed class AudioHardwareTests
         Assert.True(queue.TryRead(out var next)); Assert.Equal(input, next!.Buffer); queue.ReleaseRead();
         queue.Complete(); Assert.True(queue.TryRead(out _)); queue.ReleaseRead(); Assert.False(queue.TryRead(out _));
     }
+    [Fact]
+    public async Task CompletingCaptureQueueDoesNotLoseAnAdmittedConcurrentPacket()
+    {
+        for (var iteration = 0; iteration < 32; iteration++)
+        {
+            using var queue = new CapturePacketQueue(8, 4096);
+            var bytes = Enumerable.Repeat((byte)0x5a, 4096).ToArray();
+            var stop = 0; var accepted = 0; var consumed = 0;
+            var writer = Task.Factory.StartNew(() =>
+            {
+                while (Volatile.Read(ref stop) == 0)
+                    if (queue.TryWrite(bytes)) accepted++;
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            var reader = Task.Factory.StartNew(() =>
+            {
+                while (queue.TryRead(out var block))
+                { Assert.Equal(bytes, block!.Buffer); consumed++; queue.ReleaseRead(); }
+            }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
+            await Task.Delay(1);
+            Volatile.Write(ref stop, 1); queue.Complete();
+            await Task.WhenAll(writer, reader).WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(accepted, consumed);
+        }
+    }
     [Theory]
     [InlineData(AudioSampleEncoding.Pcm16, 2)]
     [InlineData(AudioSampleEncoding.Pcm24, 3)]

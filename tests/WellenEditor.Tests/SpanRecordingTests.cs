@@ -8,6 +8,21 @@ namespace WellenEditorTests;
 public sealed class SpanRecordingTests
 {
     [Fact]
+    public void FailedNativeStartAfterFirstPacketPreservesThatPacket()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "WaveBenchSpanTest_" + Guid.NewGuid().ToString("N"));
+        var capture = new SpanCapture { FailStartAfterPacket = true };
+        using var engine = new RecordingEngine(_ => capture, root, count => new float[count]);
+        try
+        {
+            var error = Assert.Throws<InvalidOperationException>(() => engine.Start(null));
+            Assert.Contains("gesichert unter", error.Message); Assert.False(engine.IsRecording);
+            var file = Assert.Single(Directory.GetFiles(root, "*.wav"));
+            using var reader = new WaveFileReader(file); Assert.Equal(8, reader.Length);
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+    [Fact]
     public void NativeSpanCaptureCopiesBeforeCallbackReturnsAndAllocatesNothing()
     {
         var root = Path.Combine(Path.GetTempPath(), "WaveBenchSpanTest_" + Guid.NewGuid().ToString("N"));
@@ -62,13 +77,18 @@ public sealed class SpanRecordingTests
     }
     private sealed class SpanCapture : ISpanRecordingCapture
     {
+        public bool FailStartAfterPacket;
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(48000, 1);
         public AudioStreamStatus Status => new("fixed", "fake", AudioBackendKind.WasapiShared, WaveFormat, 50, 50);
         public event CapturePacketHandler? PacketAvailable;
         public event EventHandler<WaveInEventArgs>? DataAvailable { add => throw new InvalidOperationException("Legacy allocation path must not be used"); remove { } }
         public event EventHandler<StoppedEventArgs>? RecordingStopped;
         public void Push(ReadOnlySpan<byte> bytes, bool discontinuity = false) => PacketAvailable?.Invoke(bytes, discontinuity, 0);
-        public void StartRecording() { }
+        public void StartRecording()
+        {
+            if (!FailStartAfterPacket) return;
+            Push(new byte[8]); throw new IOException("late native start failure");
+        }
         public void StopRecording() => RecordingStopped?.Invoke(this, new StoppedEventArgs(null));
         public void Dispose() { }
     }

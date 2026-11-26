@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private bool isRefreshingFileList;
     private bool isActivatingDocument;
     private IWavePlayer? player;
+    private readonly AudioPlaybackLifetime hardwareLifetime = new();
     private IDisposable? playbackProvider;
     private MeteringWaveProvider? playbackMeter;
     private AudioDocument? playbackDocument;
@@ -148,6 +149,12 @@ public partial class MainWindow : Window
         Closing += async (_, e) =>
         {
             if (closeAfterRecording) return;
+            if (hardwareLifetime.HasPending)
+            {
+                e.Cancel = true;
+                MessageBox.Show(this, "Ein Audiogerät ist noch nicht sicher freigegeben. Bitte Stopp erneut versuchen; aktive Ressourcen werden nicht parallel freigegeben.", "Audio-Hardware", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
             if (recordingStopPending || preparingMultitrack)
             {
                 e.Cancel = true;
@@ -182,6 +189,7 @@ public partial class MainWindow : Window
                 return;
             }
             recorder.Dispose();
+            if (hardwareLifetime.HasPending) e.Cancel = true;
         };
         playbackTimer.Tick += PlaybackTimer_Tick;
         Loaded += (_, _) =>
@@ -1027,8 +1035,9 @@ public partial class MainWindow : Window
         catch (Exception exception) { StopPlayback(); MessageBox.Show(this, $"Die Wiedergabe konnte nicht gestartet werden.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
     }
 
-    private static IWavePlayer CreatePlayer()
+    private IWavePlayer CreatePlayer()
     {
+        hardwareLifetime.EnsureReady();
         if (AudioHardwareSettings.OutputReselectionRequired)
             throw new InvalidOperationException("Das Ausgabegerät muss unter Optionen → Audio-Hardware erneut ausgewählt werden.");
         return AudioHardwareBackend.Default.CreatePlayback(AudioHardwareSettings.Output);
@@ -1074,6 +1083,8 @@ public partial class MainWindow : Window
     }
     private void StopPlayback()
     {
+        var retryError = hardwareLifetime.Retry();
+        if (retryError is not null) HardwareStatusText.Text = "Audiofreigabe: " + retryError.GetBaseException().Message;
         var retiringBlockPlayback = blockPlayback;
         playbackPreparationVersion++;
         blockPreparationCancellation?.Cancel();
@@ -1095,7 +1106,7 @@ public partial class MainWindow : Window
         blockPlayback = null;
         Sequencer.PositionSeconds = 0;
         if (!recorder.IsRecording) ResetLevel();
-        HintText.Content = "Wiedergabe gestoppt.";
+        HintText.Content = hardwareLifetime.HasPending ? "Audiogerät wird noch nicht sicher freigegeben. Neustart gesperrt." : "Wiedergabe gestoppt.";
     }
 
     private async void Record_Click(object sender, RoutedEventArgs e)
@@ -1233,15 +1244,19 @@ public partial class MainWindow : Window
     {
         var oldPlayer = player;
         player = null;
+        var oldProvider = playbackProvider;
+        playbackProvider = null;
+        playbackMeter = null;
         if (oldPlayer is not null)
         {
             oldPlayer.PlaybackStopped -= Player_PlaybackStopped;
-            oldPlayer.Stop();
-            oldPlayer.Dispose();
+            if (hardwareLifetime.Retire(oldPlayer, oldProvider) is { } error)
+            {
+                AudioHardwareSettings.RequireReselection(AudioDirection.Output);
+                HardwareStatusText.Text = "Fehler bei der Audiofreigabe: " + error.GetBaseException().Message;
+            }
         }
-        playbackProvider?.Dispose();
-        playbackProvider = null;
-        playbackMeter = null;
+        else oldProvider?.Dispose();
     }
 
     private void StopPreview()
@@ -1249,8 +1264,12 @@ public partial class MainWindow : Window
         var oldPlayer = previewPlayer;
         previewPlayer = null;
         if (oldPlayer is null) return;
-        oldPlayer.Stop();
-        oldPlayer.Dispose();
+        if (hardwareLifetime.Retire(oldPlayer, null) is { } error)
+        {
+            AudioHardwareSettings.RequireReselection(AudioDirection.Output);
+            HardwareStatusText.Text = "Vorschau noch nicht sicher freigegeben: " + error.GetBaseException().Message;
+            if (hardwareLifetime.HasPending) throw new InvalidOperationException(HardwareStatusText.Text, error);
+        }
     }
 
     private void PlaybackTimer_Tick(object? sender, EventArgs e)
@@ -1401,7 +1420,7 @@ public partial class MainWindow : Window
 
     private void ScanVst_Click(object sender, RoutedEventArgs e) => ScanVstEffects();
 
-    private async void ScanVstEffects()
+    private void ScanVstEffects()
     {
         if (isScanningVst) return;
         isScanningVst = true;
@@ -1595,7 +1614,7 @@ public partial class MainWindow : Window
             previewPlayer = CreatePlayer();
             previewPlayer.Init(effect);
             previewPlayer.Play();
-            HintText.Content = $"Live-Vorschau: {frames / (double)sampleRate:F1}s Schleife durch das Plugin – Regler wirken sofort. Dialog schließen stoppt.";
+            HintText.Content = $"Live-Vorschau: {frames / (double)sampleRate:F1}s Schleife durch das Plugin – Regler wirken mit Audiovorlauf. Dialog schließen stoppt.";
         }
         catch (Exception exception)
         {
@@ -1643,6 +1662,7 @@ public partial class MainWindow : Window
         if (recorder.IsRecording || recordingStopPending || preparingMultitrack)
         { HintText.Content = "Bitte zuerst Aufnahme bzw. Vorbereitung beenden."; return; }
         StopPlayback();
+        if (hardwareLifetime.HasPending) return;
         var dialog = new AudioHardwareWindow { Owner = this };
         if (dialog.ShowDialog() == true)
         {

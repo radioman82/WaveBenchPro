@@ -10,8 +10,8 @@ internal sealed record AudioStreamStatus(string DeviceId, string DeviceName, Aud
     string? NativeSampleFormat = null, int? RequestedBufferFrames = null)
 {
     public override string ToString() => $"{DeviceName} · {Backend} · {Format.SampleRate:N0} Hz / {Format.Channels} Kanäle / {Format.BitsPerSample} Bit {Format.Encoding}"
-        + (BufferFrames is { } frames ? $" · ASIO-Puffer {frames} Frames / {NegotiatedBufferMilliseconds:0.##} ms (angefordert {RequestedBufferFrames?.ToString() ?? "Treiberstandard"})" : $" · Puffer angefordert {RequestedBufferMilliseconds} ms, NAudio-API {NegotiatedBufferMilliseconds:0.##} ms (keine akustische Messung)")
-        + (NativeSampleFormat is { } native ? $" · Treiberformat {native}" : "");
+        + (BufferFrames is { } frames ? $" · ASIO-Puffer {frames} Frames / {NegotiatedBufferMilliseconds:0.##} ms (angefordert {RequestedBufferFrames?.ToString() ?? "Treiberstandard"})" : $" · Puffer angefordert {RequestedBufferMilliseconds} ms, gemeldet {NegotiatedBufferMilliseconds:0.##} ms (keine akustische Latenz)")
+        + (NativeSampleFormat is { } native ? $" · {(Backend == AudioBackendKind.WasapiShared ? "Windows-Mix" : "Treiberformat")} {native}" : "");
 }
 
 internal interface IAudioPlayback : IWavePlayer
@@ -114,6 +114,7 @@ internal sealed class WasapiPlayback : IAudioPlayback
     private readonly WasapiPlayer player;
     private readonly AudioDeviceConfiguration configuration;
     private readonly string deviceId, deviceName;
+    private readonly string mixDescription;
     private int sourceRate;
     private bool initialized;
     private HardwareReadAhead? readAhead;
@@ -128,9 +129,10 @@ internal sealed class WasapiPlayback : IAudioPlayback
                 .WithPollingSync().WithMmcssThreadPriority("Pro Audio");
             if (configuration.Backend == AudioBackendKind.WasapiExclusive) builder.WithExclusiveMode(); else builder.WithSharedMode();
             player = builder.Build();
+            mixDescription = player.DeviceMixFormat.ToString();
             player.PlaybackStopped += OnStopped;
         }
-        catch { device.Dispose(); throw; }
+        catch { player?.Dispose(); device.Dispose(); throw; }
     }
     public event EventHandler<StoppedEventArgs>? PlaybackStopped;
     private void OnStopped(object? sender, StoppedEventArgs args) => PlaybackStopped?.Invoke(this,
@@ -144,7 +146,7 @@ internal sealed class WasapiPlayback : IAudioPlayback
     public TimeSpan CurrentLatency => player.CurrentLatency;
     public AudioStreamStatus Status => new(deviceId, deviceName, configuration.Backend,
         initialized ? player.OutputWaveFormat : player.DeviceMixFormat, configuration.BufferMilliseconds,
-        initialized ? player.AverageLatency.TotalMilliseconds : 0);
+        initialized ? player.AverageLatency.TotalMilliseconds : 0, NativeSampleFormat: configuration.Backend == AudioBackendKind.WasapiShared ? mixDescription : null);
     public long PositionFrames => initialized ? (long)(player.GetPosition() / (double)OutputWaveFormat.BlockAlign * sourceRate / OutputWaveFormat.SampleRate) : 0;
     public void Init(IWaveProvider source)
     {

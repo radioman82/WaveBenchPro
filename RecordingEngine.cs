@@ -128,10 +128,15 @@ public sealed class RecordingEngine : IDisposable
             isRecording = true;
             capture.StartRecording();
         }
-        catch
+        catch (Exception startupError)
         {
             isRecording = false;
             ReleaseCapture();
+            if (ReceivedBytes > 0)
+            {
+                var recovery = PreserveRecordingFile();
+                throw new InvalidOperationException($"Der Aufnahmestart schlug nach den ersten Daten fehl. Die Teilaufnahme wurde gesichert unter: {recovery}", startupError);
+            }
             DiscardRecordingFile();
             throw;
         }

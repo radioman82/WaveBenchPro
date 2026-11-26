@@ -14,7 +14,7 @@ internal sealed class HardwareReadAhead : IWaveProvider, IDisposable, IHardwareR
     private readonly AutoResetEvent space = new(false);
     private readonly Task producer;
     private long produced, consumed, underruns;
-    private int offset, stopping, completed;
+    private int offset, stopping, completed, handlesDisposed;
     private Exception? error;
     public WaveFormat WaveFormat => source.WaveFormat;
     public bool HardwareReady => true;
@@ -62,6 +62,7 @@ internal sealed class HardwareReadAhead : IWaveProvider, IDisposable, IHardwareR
     public int Read(byte[] buffer, int start, int count) => Read(buffer.AsSpan(start, count));
     public int Read(Span<byte> target)
     {
+        if (Volatile.Read(ref stopping) != 0) return 0;
         var written = 0;
         var usable = target.Length / WaveFormat.BlockAlign * WaveFormat.BlockAlign;
         while (written < usable)
@@ -69,7 +70,11 @@ internal sealed class HardwareReadAhead : IWaveProvider, IDisposable, IHardwareR
             var next = Volatile.Read(ref consumed);
             if (next == Volatile.Read(ref produced))
             {
-                if (Volatile.Read(ref completed) != 0) break;
+                if (Volatile.Read(ref completed) != 0)
+                {
+                    if (next == Volatile.Read(ref produced)) break;
+                    continue;
+                }
                 target[written..usable].Clear();
                 Interlocked.Increment(ref underruns);
                 return usable;
@@ -82,13 +87,13 @@ internal sealed class HardwareReadAhead : IWaveProvider, IDisposable, IHardwareR
         }
         return written;
     }
-    public void Dispose() { Volatile.Write(ref stopping, 1); space.Set(); }
+    public void Dispose() { if (Interlocked.Exchange(ref stopping, 1) == 0) space.Set(); }
     internal async Task<bool> StopAsync(TimeSpan timeout)
     { Dispose(); return await Task.WhenAny(producer, Task.Delay(timeout)).ConfigureAwait(false) == producer; }
     internal void DrainAndDispose()
     {
         Dispose(); producer.GetAwaiter().GetResult(); // Never release a provider while its native Read is still running.
-        space.Dispose();
+        if (Interlocked.Exchange(ref handlesDisposed, 1) == 0) space.Dispose();
     }
     internal static bool NeedsWorker(IWaveProvider source) => source is not IHardwareReadyWaveProvider { HardwareReady: true } && source is not ArrayWaveProvider;
 }
