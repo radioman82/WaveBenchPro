@@ -50,7 +50,7 @@ In the experimental engine, close the FX dialog to prepare changes and restart. 
 
 ## Recording
 
-Choose input/output in **Optionen → Audio-Hardware**. Record starts/stops WASAPI capture; select the intended document/cursor first.
+Choose input/output separately in **Optionen → Audio-Hardware** and explicitly select the intended recording device. Shared capture is the default; installed ASIO drivers can be selected separately. Record starts/stops capture; select the intended document/cursor first. See [Audio hardware](AudioHardware.md) for modes, formats, buffers and recovery.
 
 On device/disk errors, read the displayed recovery-file path and secure that WAV. Recovery is failure handling, not project autosave.
 

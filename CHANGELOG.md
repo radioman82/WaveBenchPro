@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — hardware backends
+
+- Unified NAudio 3.3.0 builder-based WASAPI playback/capture, retaining Shared default and both multitrack engines.
+- Optional explicit-format Exclusive playback; installed ASIO drivers with independent playback/recording, channel maps, driver buffer and control panel.
+- Persisted input/output identity and mode, device-loss reselection, actual hardware status and partial-recording recovery.
+- Preallocated capture packets, read-ahead for file/live-plugin sources, failed native-retirement ownership and playback wait-handle cleanup.
+- Corrected persisted WAVEFORMATEXTENSIBLE decoding; expanded deterministic regressions and separate hardware measurements.
+- Exact NAudio MIT source notice and native codec provenance inventory. Redistribution and clean-host gates remain open.
+
+No new version/tag/release approval is implied; the existing beta.2 draft assets remain unchanged.
+
 ## 0.3.0-beta.2 — unreleased draft
 
 - Fixed file export reading WPF dialog controls from a background thread.

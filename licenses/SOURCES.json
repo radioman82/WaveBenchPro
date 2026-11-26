@@ -1,5 +1,5 @@
 {
-  "NAudio-MIT.txt": "https://raw.githubusercontent.com/naudio/NAudio/release/2.x/license.txt",
+  "NAudio-MIT.txt": "https://raw.githubusercontent.com/naudio/NAudio/4f8889e2bd34c3978a25652c6c172fa1502ccba3/LICENSE",
   "libsndfile-COPYING.txt": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/COPYING",
   "LGPL-2.1.txt": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/COPYING",
   "LGPL-2.0.txt": "https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt",

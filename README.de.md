@@ -8,7 +8,7 @@ Windows-Audioeditor mit klassischer Wellenformansicht und Mehrspur-Sequenzer. En
 
 ## Download und Start
 
-[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.2 wird als Entwurf vorbereitet**; Abnahme und Lizenzfreigabe stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen.
+[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.2 wird als Entwurf vorbereitet**; Abnahme und Lizenzfreigabe stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen. Die unten beschriebenen Hardware-Backends sind unveröffentlichte Quellcodeänderungen und nicht in den eingefrorenen beta.2-Assets enthalten.
 
 Das portable ZIP vollständig in einen beschreibbaren Ordner entpacken und **WaveBenchPro.exe** starten. Begleitdateien und Lizenzhinweise zusammenlassen. Die .NET-Laufzeit ist enthalten; zum Start wird kein SDK benötigt. Die Builds sind derzeit nicht signiert.
 
@@ -21,7 +21,7 @@ Das portable ZIP vollständig in einen beschreibbaren Ordner entpacken und **Wav
 - WAV, FLAC, MP3, Ogg Vorbis und Opus öffnen/exportieren, mit Formatparametern.
 - Wellenform/Spektrogramm und getrennte horizontale/vertikale Zoomtasten mit Reset.
 - Stereo-Pegelanzeige mit Peak, RMS, Peak-Hold und Clipping.
-- WASAPI Shared für Wiedergabe/Aufnahme mit Geräteauswahl.
+- WASAPI Shared als Standard, optional Exclusive-Wiedergabe und installierte ASIO-Treiber. Getrennte Ein-/Ausgabe, Kanalzuordnung und Aufnahme: [Audio-Hardware](docs/AudioHardware.md).
 - Verstärkung, Normalisierung, Fades, EQ, Hoch-/Tiefpass, Kompressor und Peak-Clipper.
 - Installierte VST3-Effekte scannen, bearbeiten, live abhören und offline anwenden.
 - Dateien in Mehrspur ziehen: Spuren entstehen automatisch. Beat-/Taktraster, BPM, Clippositionen, Lautstärke, Panorama, Stumm und Solo.
@@ -40,7 +40,7 @@ Die Mixerregler benötigen keine neue Effektvorbereitung. Bereits gepufferte Dat
 - Mehrspurprojekte lassen sich noch nicht speichern/wieder öffnen. Mixdown exportieren und Quellen separat sichern.
 - Eine vollständige Hardware-Langzeitabnahme steht aus.
 - Nach Clip-/Effektänderungen werden alle belegten Spuren vorbereitet. Große Projekte können Minuten und viel Disk benötigen.
-- RIFF-WAV-Grenzen gelten; RF64, WASAPI Exclusive und ASIO fehlen.
+- RIFF-WAV-Grenzen gelten; RF64 fehlt. Exclusive-Aufnahme, ASIO-Loopback und abgenommenes Full-Duplex werden nicht angeboten.
 - Native Plugins laufen im Programmprozess und können hängen/abstürzen. Nicht jedes VST3 ist kompatibel oder deterministisch.
 - Der Peak-Clipper ist kein Lookahead-Limiter. BPM-Zahlen kommen aus Dateinamen; es gibt keine Beat-Erkennung.
 - Startzeit, RAM, akustische Latenz und dauerhaft störungsfreie Wiedergabe sind nicht pauschal zugesichert.

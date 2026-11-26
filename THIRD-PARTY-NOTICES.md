@@ -4,7 +4,7 @@ WaveBench Pro uses third-party software with separate licenses. The application 
 
 | Component | Package / origin | Notice |
 |---|---|---|
-| NAudio Core, MIDI, WinMM, WASAPI, SoundFile and VST3 | NAudio 3.3.0 family | MIT declared by packages; see licenses/NAudio-MIT.txt and provenance limitation in docs/LicenseStatus.md |
+| NAudio Core, MIDI, WinMM, WASAPI, ASIO, SoundFile and VST3 | NAudio 3.3.0 family | MIT notice from the exact package source commit; see licenses/NAudio-MIT.txt and docs/LicenseStatus.md |
 | NAudio.Lame | 2.1.0, Corey Murtagh | licenses/NAudio-Lame-MIT.txt; native LAME is separate |
 | libsndfile | org.sndfile.runtime.win-x64 1.2.2 | licenses/libsndfile-COPYING.txt, LGPL texts |
 | libmp3lame | Runtime package and NAudio.Lame native DLLs | LGPL-family terms; exact build/source obligations pending review |
