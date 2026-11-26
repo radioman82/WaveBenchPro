@@ -81,7 +81,7 @@ internal static class PlaybackMeasurements
             using var provider = new PreparedMultitrackPlayback(session);
             await provider.ConfigurePlaybackAsync(0, session.FrameCount, true);
             var meter = new CallbackMeasure(provider);
-            using var player = new WasapiOut(output, AudioClientShareMode.Shared, false, 50);
+            using var player = AudioHardwareBackend.Default.CreatePlayback(new() { DeviceId = output.ID });
             var stopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
             player.PlaybackStopped += (_, args) => stopped.TrySetResult(args.Exception);
             player.Init(meter);
@@ -102,7 +102,7 @@ internal static class PlaybackMeasurements
             for (var cycle = 0; cycle < 100; cycle++)
             {
                 await provider.ConfigurePlaybackAsync((cycle * 997) % (48000 * 3), 48000, true);
-                using var restart = new WasapiOut(output, AudioClientShareMode.Shared, false, 50);
+                using var restart = AudioHardwareBackend.Default.CreatePlayback(new() { DeviceId = output.ID });
                 var end = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 restart.PlaybackStopped += (_, args) => end.TrySetResult(args.Exception);
                 restart.Init(provider);
@@ -184,8 +184,9 @@ internal static class PlaybackMeasurements
         return difference <= 1e-6 && latencyError <= 1 && maximum <= 1e-6 && bypassError == 0 && output.All(float.IsFinite) ? 0 : 1;
     }
 
-    private sealed class CallbackMeasure(IWaveProvider source) : IWaveProvider
+    private sealed class CallbackMeasure(IWaveProvider source) : IWaveProvider, IHardwareReadyWaveProvider
     {
+        public bool HardwareReady => true; // The measured source is the prepared bounded provider.
         public WaveFormat WaveFormat => source.WaveFormat;
         public long Calls, Allocated, MaxTicks;
         public int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));

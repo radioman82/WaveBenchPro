@@ -15,6 +15,9 @@ public static class AudioFormatConverter
         if (count < 0 || count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
         ArgumentNullException.ThrowIfNull(format);
 
+        // WaveFileReader materializes persisted extensible headers as WaveFormatExtraData.
+        // NAudio's converter understands both that representation and WaveFormatExtensible.
+        format = format.AsStandardWaveFormat();
         var encoding = format.Encoding;
         if (encoding == WaveFormatEncoding.Extensible)
         {

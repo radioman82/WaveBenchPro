@@ -7,6 +7,20 @@ namespace WellenEditorTests;
 
 public sealed class AudioFormatConverterTests
 {
+    [Theory]
+    [InlineData(16)]
+    [InlineData(32)]
+    public void DecodeExtensibleHeaderReadBackFromRecordingWave(int bits)
+    {
+        using var stream = new System.IO.MemoryStream();
+        var format = new WaveFormatExtensible(48000, bits, 1);
+        var bytes = bits == 16 ? new byte[] { 0, 64, 0, 224 } : new[] { .5f, -.25f }.SelectMany(BitConverter.GetBytes).ToArray();
+        using (var writer = new WaveFileWriter(stream, format)) writer.Write(bytes, 0, bytes.Length);
+        using var reader = new WaveFileReader(new System.IO.MemoryStream(stream.ToArray()));
+        var payload = new byte[bytes.Length];
+        reader.Read(payload, 0, payload.Length).Should().Be(bytes.Length);
+        AudioFormatConverter.Decode(payload, payload.Length, reader.WaveFormat).Should().Equal(.5f, -.25f);
+    }
     [Fact]
     public void DecodePcm16InterpretsLittleEndianSignedSamples()
     {

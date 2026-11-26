@@ -37,10 +37,11 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     private int blockOffset;
     private int complete;
     private int disposed;
-    private bool workerFinished;
-    private bool cancellationFinished;
     private Task cancellationTask = Task.CompletedTask;
     private Task cancellationCompletion = Task.CompletedTask;
+    private Task resourceCompletion = Task.CompletedTask;
+    private int activeReads;
+    internal bool HandlesReleased => spaceAvailable.SafeWaitHandle.IsClosed;
     private Exception? workerError;
 
     public WaveFormat WaveFormat { get; }
@@ -53,7 +54,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     internal Task Completion => worker;
     internal Task ShutdownCompletion
     {
-        get { lock (lifetimeGate) return Task.WhenAll(worker, cancellationCompletion); }
+        get { lock (lifetimeGate) return Task.WhenAll(worker, cancellationCompletion, resourceCompletion); }
     }
     internal int Capacity => blocks.Length;
     internal long AudibleFrame(int latencyFrames)
@@ -142,16 +143,17 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                 }
             }
             Volatile.Write(ref complete, 1);
-            lock (lifetimeGate)
-            {
-                workerFinished = true;
-                if (disposed != 0 && cancellationFinished) cancellation.Dispose();
-            }
         }
     }
 
     public int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
     public int Read(Span<byte> buffer)
+    {
+        Interlocked.Increment(ref activeReads);
+        try { return Volatile.Read(ref disposed) != 0 ? 0 : ReadCore(buffer); }
+        finally { Interlocked.Decrement(ref activeReads); }
+    }
+    private int ReadCore(Span<byte> buffer)
     {
         var output = MemoryMarshal.Cast<byte, float>(buffer[..(buffer.Length / 8 * 8)]);
         var written = 0;
@@ -203,6 +205,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
             disposed = 1;
             cancellationTask = cancellation.CancelAsync();
             cancellationCompletion = FinishCancellationAsync();
+            resourceCompletion = FinishResourcesAsync();
         }
     }
 
@@ -217,21 +220,25 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
                 Volatile.Write(ref workerError, existing is null ? exception : new AggregateException(existing, exception));
             }
         }
-        finally
-        {
-            lock (lifetimeGate)
-            {
-                cancellationFinished = true;
-                if (workerFinished) cancellation.Dispose();
-            }
-        }
+    }
+
+    private async Task FinishResourcesAsync()
+    {
+        await Task.WhenAll(worker, cancellationCompletion).ConfigureAwait(false);
+        while (Volatile.Read(ref activeReads) != 0) await Task.Delay(1).ConfigureAwait(false);
+        // New reads see disposed before touching either handle. Native readers and
+        // cancellation callbacks have actually finished; closing is never on Read.
+        spaceAvailable.Dispose();
+        cancellation.Dispose();
     }
 
     internal async Task<bool> StopAsync(TimeSpan timeout)
     {
         if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
         Dispose();
-        var completion = Task.WhenAll(worker, cancellationCompletion);
-        return await Task.WhenAny(completion, Task.Delay(timeout)).ConfigureAwait(false) == completion;
+        var completion = ShutdownCompletion;
+        if (await Task.WhenAny(completion, Task.Delay(timeout)).ConfigureAwait(false) != completion) return false;
+        await completion.ConfigureAwait(false);
+        return true;
     }
 }

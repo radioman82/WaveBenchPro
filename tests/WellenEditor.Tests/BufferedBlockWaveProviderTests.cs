@@ -8,6 +8,25 @@ namespace WellenEditorTests;
 public sealed class BufferedBlockWaveProviderTests
 {
     [Fact]
+    public async Task StopTimeoutRetainsHandlesUntilTheActualProducerHasExited()
+    {
+        using var entered = new ManualResetEventSlim(); using var release = new ManualResetEventSlim();
+        var renderer = new GateRenderer(entered, release);
+        using var provider = new BufferedBlockWaveProvider(renderer, 2);
+        Assert.True(entered.Wait(TimeSpan.FromSeconds(2)));
+        try
+        {
+            Assert.False(await provider.StopAsync(TimeSpan.FromMilliseconds(20)));
+            Assert.False(provider.HandlesReleased);
+            Assert.False(renderer.Disposed);
+        }
+        finally { release.Set(); }
+        await provider.ShutdownCompletion.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(provider.HandlesReleased); Assert.True(renderer.Disposed);
+        Assert.Equal(0, provider.Read(new byte[128]));
+        Assert.True(await provider.StopAsync(TimeSpan.FromSeconds(1)));
+    }
+    [Fact]
     public async Task CallbackReturnsSilenceAndCountsUnderrunWhileProducerIsBlocked()
     {
         using var entered = new ManualResetEventSlim();

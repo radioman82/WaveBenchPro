@@ -20,6 +20,15 @@
           "NAudio.WinMM": "3.3.0"
         }
       },
+      "NAudio.Asio": {
+        "type": "Direct",
+        "requested": "[3.3.0, )",
+        "resolved": "3.3.0",
+        "contentHash": "jz+WNmGAe/MYNoALt3jeMgeRyc8kH9ecNxXD4SVeRuqkEuhvOZjK4Xr48vXHa8yyoR8nsoMFSUrzMGC3o56fpQ==",
+        "dependencies": {
+          "NAudio.Core": "3.3.0"
+        }
+      },
       "NAudio.Lame": {
         "type": "Direct",
         "requested": "[2.1.0, )",

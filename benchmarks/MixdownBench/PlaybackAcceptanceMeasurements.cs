@@ -24,7 +24,7 @@ internal static class PlaybackAcceptanceMeasurements
             foreach (var device in devices.Take(2))
             {
                 await playback.ConfigurePlaybackAsync(0, session.FrameCount, true);
-                using var player = new WasapiOut(device, AudioClientShareMode.Shared, false, 50);
+                using var player = AudioHardwareBackend.Default.CreatePlayback(new() { DeviceId = device.ID });
                 var stopped = new TaskCompletionSource<Exception?>(TaskCreationOptions.RunContinuationsAsynchronously);
                 player.PlaybackStopped += (_, e) => stopped.TrySetResult(e.Exception);
                 player.Init(playback); player.Play();
@@ -38,10 +38,10 @@ internal static class PlaybackAcceptanceMeasurements
         await playback.ConfigurePlaybackAsync(0, session.FrameCount, true);
         var recovery = Path.Combine(Path.GetTempPath(), $"WaveBenchCaptureCheck_{Guid.NewGuid():N}");
         VerifyRecordingSink? sink = null;
-        using var recorder = new RecordingEngine(_ => new WasapiCaptureAdapter(new WasapiLoopbackCapture(primary)),
+        using var recorder = new RecordingEngine(_ => AudioHardwareBackend.Default.CreateCapture(new() { Backend = AudioBackendKind.WasapiLoopback, DeviceId = primary.ID }),
             recovery, size => new float[size], TimeSpan.FromSeconds(5),
             (path, format) => sink = new VerifyRecordingSink(path, format));
-        using (var player = new WasapiOut(primary, AudioClientShareMode.Shared, false, 50))
+        using (var player = AudioHardwareBackend.Default.CreatePlayback(new() { DeviceId = primary.ID }))
         {
             player.Init(playback);
             recorder.Start(null); player.Play();

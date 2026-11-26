@@ -29,6 +29,7 @@
     <Compile Include="**\*.cs" Exclude="tests\**\*.cs;benchmarks\**\*.cs;.tooling\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
     <InternalsVisibleTo Include="WellenEditor.Tests" />
     <PackageReference Include="NAudio" Version="3.3.0" />
+    <PackageReference Include="NAudio.Asio" Version="3.3.0" />
     <PackageReference Include="NAudio.Vst3" Version="3.3.0" />
     <PackageReference Include="NAudio.Lame" Version="2.1.0" />
     <PackageReference Include="NAudio.SoundFile" Version="3.3.0" />

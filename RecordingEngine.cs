@@ -1,7 +1,5 @@
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
-using System.Buffers;
-using System.Collections.Concurrent;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
@@ -30,26 +28,6 @@ internal sealed class WaveFileRecordingSink : IRecordingSink
     public void Dispose() => writer.Dispose();
 }
 
-internal sealed class WasapiCaptureAdapter : IRecordingCapture
-{
-    private readonly WasapiCapture capture;
-    public WasapiCaptureAdapter(WasapiCapture capture) => this.capture = capture;
-    public WaveFormat WaveFormat => capture.WaveFormat;
-    public event EventHandler<WaveInEventArgs>? DataAvailable
-    {
-        add => capture.DataAvailable += value;
-        remove => capture.DataAvailable -= value;
-    }
-    public event EventHandler<StoppedEventArgs>? RecordingStopped
-    {
-        add => capture.RecordingStopped += value;
-        remove => capture.RecordingStopped -= value;
-    }
-    public void StartRecording() => capture.StartRecording();
-    public void StopRecording() => capture.StopRecording();
-    public void Dispose() => capture.Dispose();
-}
-
 /// <summary>
 /// Nimmt über WASAPI vom gewählten Eingabegerät auf und liefert beim Stoppen
 /// ein formatfestes AudioSelectionData. Capture-Daten werden non-blocking in eine begrenzte Queue kopiert;
@@ -57,7 +35,6 @@ internal sealed class WasapiCaptureAdapter : IRecordingCapture
 /// </summary>
 public sealed class RecordingEngine : IDisposable
 {
-    private readonly record struct CaptureBlock(byte[] Buffer, int BytesRecorded);
     private const int CaptureQueueCapacity = 8;
     private readonly ManualResetEventSlim stopped = new(false);
     private readonly object writerGate = new();
@@ -67,7 +44,9 @@ public sealed class RecordingEngine : IDisposable
     private readonly TimeSpan stopTimeout;
     private IRecordingCapture? capture;
     private IRecordingSink? recorded;
-    private BlockingCollection<CaptureBlock>? captureQueue;
+    private CapturePacketQueue? captureQueue;
+    private int captureFailure;
+    private long receivedBytes, writtenBytes, packets;
     private Task? captureWriterTask;
     private Task? deferredWriterCleanup;
     private bool disposed;
@@ -82,6 +61,18 @@ public sealed class RecordingEngine : IDisposable
     public WaveFormat? CaptureFormat => format;
     public float LastPeak { get; private set; }
     public event EventHandler<float[]>? LevelsChanged;
+    public event EventHandler? RecordingFaulted;
+    public long ReceivedBytes => Interlocked.Read(ref receivedBytes);
+    public long WrittenBytes => Interlocked.Read(ref writtenBytes);
+    internal AudioStreamStatus? HardwareStatus => (capture as ISpanRecordingCapture)?.Status;
+    internal void DeviceLost(Exception error)
+    {
+        if (!isRecording) return;
+        SetRecordingError(error);
+        Volatile.Write(ref acceptingCaptureData, 0);
+        try { capture?.StopRecording(); } catch (Exception stopError) { SetRecordingError(stopError); }
+        RecordingFaulted?.Invoke(this, EventArgs.Empty);
+    }
     internal Task? PendingFinalization { get { lock (writerGate) return deferredWriterCleanup; } }
     public bool IsFinalizationPending { get { lock (writerGate) return deferredWriterCleanup is { IsCompleted: false }; } }
 
@@ -99,11 +90,9 @@ public sealed class RecordingEngine : IDisposable
 
     private static IRecordingCapture CreateCapture(string? deviceId)
     {
-        using var enumerator = new MMDeviceEnumerator();
-        var device = string.IsNullOrWhiteSpace(deviceId)
-            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Capture, Role.Multimedia)
-            : enumerator.GetDevice(deviceId);
-        return new WasapiCaptureAdapter(new WasapiCapture(device));
+        if (AudioHardwareSettings.InputReselectionRequired)
+            throw new InvalidOperationException("Das Aufnahmegerät muss unter Audio-Hardware erneut ausgewählt werden.");
+        return AudioHardwareBackend.Default.CreateCapture(AudioHardwareSettings.Input with { DeviceId = deviceId });
     }
 
     public void Start(string? deviceId)
@@ -119,25 +108,29 @@ public sealed class RecordingEngine : IDisposable
         format = capture.WaveFormat;
         stopped.Reset();
         recordingError = null;
+        captureFailure = 0;
+        receivedBytes = writtenBytes = packets = 0;
         LastPeak = 0f;
         try
         {
             recordingPath = Path.Combine(Path.GetTempPath(), $"WaveBenchPro_Recording_{Guid.NewGuid():N}.wav");
             recorded = sinkFactory(recordingPath, format);
-            captureQueue = new BlockingCollection<CaptureBlock>(CaptureQueueCapacity);
+            captureQueue = new CapturePacketQueue(CaptureQueueCapacity, Math.Max(64 * 1024, format.AverageBytesPerSecond / 2));
             Volatile.Write(ref acceptingCaptureData, 1);
             // This worker blocks on a capture queue and synchronous file writes.
             // It must not wait for thread-pool injection while native capture is
             // already filling the bounded queue.
             captureWriterTask = Task.Factory.StartNew(DrainCaptureQueue, CancellationToken.None,
                 TaskCreationOptions.LongRunning, TaskScheduler.Default);
-            capture.DataAvailable += OnDataAvailable;
+            if (capture is ISpanRecordingCapture spanCapture) spanCapture.PacketAvailable += OnPacket;
+            else capture.DataAvailable += OnDataAvailable;
             capture.RecordingStopped += OnRecordingStopped;
-            capture.StartRecording();
             isRecording = true;
+            capture.StartRecording();
         }
         catch
         {
+            isRecording = false;
             ReleaseCapture();
             DiscardRecordingFile();
             throw;
@@ -216,31 +209,29 @@ public sealed class RecordingEngine : IDisposable
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
-        if (e.BytesRecorded <= 0 || format is null || Volatile.Read(ref acceptingCaptureData) == 0) return;
-        byte[]? rented = null;
-        try
-        {
-            rented = ArrayPool<byte>.Shared.Rent(e.BytesRecorded);
-            Buffer.BlockCopy(e.Buffer, 0, rented, 0, e.BytesRecorded);
-            var queue = captureQueue;
-            if (Volatile.Read(ref acceptingCaptureData) == 0 || queue is null || !queue.TryAdd(new CaptureBlock(rented, e.BytesRecorded)))
-            {
-                ArrayPool<byte>.Shared.Return(rented);
-                rented = null;
-                SetRecordingError(new IOException("Der Aufnahme-Puffer ist voll; die Aufnahme wurde angehalten und die bisherige WAV wird gesichert."));
-                Volatile.Write(ref acceptingCaptureData, 0);
-                try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
-                return;
-            }
-        }
-        catch (Exception exception)
-        {
-            if (rented is not null) ArrayPool<byte>.Shared.Return(rented);
-            SetRecordingError(new IOException("Der Aufnahmeblock konnte nicht sicher in die Pufferwarteschlange übernommen werden.", exception));
-            Volatile.Write(ref acceptingCaptureData, 0);
-            try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
-            return;
-        }
+        OnPacket(e.Buffer.AsSpan(0, e.BytesRecorded), false, 0);
+    }
+
+    private void OnPacket(ReadOnlySpan<byte> bytes, bool discontinuity, long devicePosition)
+    {
+        if (bytes.Length == 0 || Volatile.Read(ref acceptingCaptureData) == 0) return;
+        Interlocked.Add(ref receivedBytes, bytes.Length);
+        var count = Interlocked.Increment(ref packets);
+        if (discontinuity && count > 1) Interlocked.CompareExchange(ref captureFailure, 2, 0);
+        if (Volatile.Read(ref captureFailure) == 0 && captureQueue?.TryWrite(bytes) == true) return;
+        Interlocked.CompareExchange(ref captureFailure, 1, 0);
+        Volatile.Write(ref acceptingCaptureData, 0);
+        captureQueue?.Complete(); // Signal only: stopping the driver happens on the IO worker.
+    }
+
+    private void ObserveCaptureFailure()
+    {
+        var failure = Interlocked.Exchange(ref captureFailure, 0);
+        if (failure == 0) return;
+        SetRecordingError(new IOException(failure == 2
+            ? "Das Audiogerät meldet eine Aufnahmelücke. Die Teilaufnahme wird gesichert; bitte Gerät erneut auswählen."
+            : "Der Aufnahme-Puffer ist voll oder ein Paket ist zu groß; die Teilaufnahme wird gesichert."));
+        try { capture?.StopRecording(); } catch (Exception e) { SetRecordingError(e); }
     }
 
     private void DrainCaptureQueue()
@@ -249,11 +240,14 @@ public sealed class RecordingEngine : IDisposable
         if (queue is null) return;
         try
         {
-        foreach (var item in queue.GetConsumingEnumerable())
+        while (queue.TryRead(out var captured))
         {
+            var item = captured!;
+            ObserveCaptureFailure();
             try
             {
                 recorded?.Write(item.Buffer, 0, item.BytesRecorded);
+                Interlocked.Add(ref writtenBytes, item.BytesRecorded);
                 var currentFormat = format;
                 if (currentFormat is not null)
                 {
@@ -275,8 +269,9 @@ public sealed class RecordingEngine : IDisposable
                 Volatile.Write(ref acceptingCaptureData, 0);
                 try { capture?.StopRecording(); } catch { /* der Treiber könnte bereits beendet sein */ }
             }
-            finally { ArrayPool<byte>.Shared.Return(item.Buffer); }
+            finally { queue.ReleaseRead(); }
         }
+        ObserveCaptureFailure();
         }
         finally
         {
@@ -291,12 +286,14 @@ public sealed class RecordingEngine : IDisposable
         Volatile.Write(ref acceptingCaptureData, 0);
         CompleteCaptureQueue();
         stopped.Set();
+        if (recordingError is not null) RecordingFaulted?.Invoke(this, EventArgs.Empty);
     }
 
     private void ReleaseCapture()
     {
         if (capture is null) return;
-        capture.DataAvailable -= OnDataAvailable;
+        if (capture is ISpanRecordingCapture spanCapture) spanCapture.PacketAvailable -= OnPacket;
+        else capture.DataAvailable -= OnDataAvailable;
         capture.RecordingStopped -= OnRecordingStopped;
         try { capture.StopRecording(); } catch { /* Treiber bereits gestoppt */ }
         capture.Dispose();
@@ -351,8 +348,7 @@ public sealed class RecordingEngine : IDisposable
     private void CompleteCaptureQueue()
     {
         var queue = captureQueue;
-        if (queue is null || queue.IsAddingCompleted) return;
-        try { queue.CompleteAdding(); } catch (InvalidOperationException) { }
+        queue?.Complete();
     }
 
     private void SetRecordingError(Exception exception) => Interlocked.CompareExchange(ref recordingError, exception, null);

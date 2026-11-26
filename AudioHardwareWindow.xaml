@@ -1,11 +1,32 @@
-<Window x:Class="WellenEditor.AudioHardwareWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Audio-Hardware" Width="570" Height="420" ResizeMode="NoResize" WindowStartupLocation="CenterOwner" FontFamily="Tahoma" FontSize="11" Background="#FFC0C0C0">
-  <Grid Margin="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <TextBlock Text="Audio-Hardwarezuordnung" FontWeight="Bold" FontSize="13" Margin="2,0,0,10"/>
-    <Grid Grid.Row="1"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="20"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-      <TextBlock Text="Wiedergabe" FontWeight="Bold"/><Grid Grid.Row="1" Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Ausgabegerät:" VerticalAlignment="Center"/><ComboBox x:Name="OutputDeviceBox" Grid.Column="1" MinWidth="350" DisplayMemberPath="Name"/></Grid>
-      <TextBlock Grid.Row="3" Text="Aufnahme" FontWeight="Bold"/><Grid Grid.Row="4" Margin="0,5,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="145"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="Eingabegerät:" VerticalAlignment="Center"/><ComboBox x:Name="InputDeviceBox" Grid.Column="1" DisplayMemberPath="Name"/></Grid>
-      <TextBlock Grid.Row="5" Margin="0,18,0,0" TextWrapping="Wrap" Foreground="#FF404040">Die Liste zeigt die aktiven Windows-Audioendpunkte. Das gewählte Ausgabegerät wird für die Wiedergabe verwendet. Das Eingabegerät ist für die Aufnahmezuordnung hinterlegt.</TextBlock>
-    </Grid>
-    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right"><Button Width="85" Margin="4" IsDefault="True" Click="Ok_Click">OK</Button><Button Width="85" Margin="4" IsCancel="True">Abbrechen</Button></StackPanel>
-  </Grid>
+<Window x:Class="WellenEditor.AudioHardwareWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Audio-Hardware" Width="760" Height="710" MinWidth="650" MinHeight="620" WindowStartupLocation="CenterOwner" FontFamily="Segoe UI" FontSize="12" Background="#182329" Foreground="#E4ECEF">
+  <Window.Resources>
+    <Style TargetType="TextBlock"><Setter Property="Margin" Value="0,3,8,3"/></Style>
+    <Style TargetType="ComboBox"><Setter Property="Margin" Value="0,3,0,3"/><Setter Property="MinWidth" Value="180"/><Setter Property="Foreground" Value="#10181C"/></Style>
+    <Style TargetType="TextBox"><Setter Property="Margin" Value="0,3,0,3"/><Setter Property="Padding" Value="4"/></Style>
+    <Style TargetType="Button"><Setter Property="Padding" Value="10,5"/><Setter Property="Margin" Value="4"/><Setter Property="Foreground" Value="#10181C"/></Style>
+    <Style TargetType="GroupBox"><Setter Property="Foreground" Value="#E4ECEF"/><Setter Property="Margin" Value="0,5"/><Setter Property="Padding" Value="10"/></Style>
+  </Window.Resources>
+  <DockPanel Margin="16">
+    <StackPanel DockPanel.Dock="Top"><TextBlock Text="Audio-Hardware" FontSize="20" FontWeight="SemiBold"/><TextBlock Text="Shared bleibt Standard. Ein anderer Modus wird nur durch Ihre Auswahl übernommen." TextWrapping="Wrap" Foreground="#A5B9C1"/></StackPanel>
+    <StackPanel DockPanel.Dock="Bottom"><TextBlock x:Name="HardwareErrorText" TextWrapping="Wrap" Foreground="#FFBD78"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Button Content="Übernehmen" IsDefault="True" Click="Ok_Click"/><Button Content="Abbrechen" IsCancel="True"/></StackPanel></StackPanel>
+    <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel>
+      <GroupBox Header="Wiedergabe"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TextBlock Text="Backend / Modus"/><ComboBox x:Name="OutputBackendBox" Grid.Column="1" DisplayMemberPath="Name" SelectionChanged="OutputMode_Changed"/>
+        <TextBlock Grid.Row="1" Text="Gerät / Treiber"/><ComboBox x:Name="OutputDeviceBox" Grid.Row="1" Grid.Column="1" DisplayMemberPath="Name"/>
+        <TextBlock Grid.Row="2" Text="Rate / Ausgabeformat"/><StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal"><ComboBox x:Name="OutputRateBox" DisplayMemberPath="Name" MinWidth="150"/><ComboBox x:Name="OutputEncodingBox" DisplayMemberPath="Name" MinWidth="185" Margin="8,3,0,3"/></StackPanel>
+        <TextBlock Grid.Row="3" Text="WASAPI-Puffer (ms)"/><TextBox x:Name="OutputBufferBox" Grid.Row="3" Grid.Column="1"/>
+        <TextBlock Grid.Row="4" Text="ASIO: Kanäle / Frames"/><Grid Grid.Row="4" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="OutputChannelsBox" ToolTip="Kanalnummern ab 1, z.B. 1,2; leer = erste Quellkanäle"/><TextBox x:Name="OutputFramesBox" Grid.Column="1" Margin="8,3,0,3" ToolTip="Leer = bevorzugter Treiberpuffer; sonst exakte Framezahl"/></Grid>
+        <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Formate und Puffer abfragen" Click="OutputCapabilities_Click"/><Button Content="ASIO-Control-Panel" Click="OutputPanel_Click"/></StackPanel>
+      </Grid></GroupBox>
+      <GroupBox Header="Aufnahme"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <TextBlock Text="Backend / Modus"/><ComboBox x:Name="InputBackendBox" Grid.Column="1" DisplayMemberPath="Name" SelectionChanged="InputMode_Changed"/>
+        <TextBlock Grid.Row="1" Text="Gerät / Treiber"/><ComboBox x:Name="InputDeviceBox" Grid.Row="1" Grid.Column="1" DisplayMemberPath="Name"/>
+        <TextBlock Grid.Row="2" Text="Rate / WASAPI-ms"/><Grid Grid.Row="2" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ComboBox x:Name="InputRateBox" DisplayMemberPath="Name"/><TextBox x:Name="InputBufferBox" Grid.Column="1" Margin="8,3,0,3"/></Grid>
+        <TextBlock Grid.Row="3" Text="ASIO: Kanäle / Frames"/><Grid Grid.Row="3" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="InputChannelsBox" ToolTip="Kanalnummern ab 1, z.B. 1,2; leer = erste zwei Eingänge"/><TextBox x:Name="InputFramesBox" Grid.Column="1" Margin="8,3,0,3" ToolTip="Leer = bevorzugter Treiberpuffer"/></Grid>
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Fähigkeiten abfragen" Click="InputCapabilities_Click"/><Button Content="ASIO-Control-Panel" Click="InputPanel_Click"/></StackPanel>
+      </Grid></GroupBox>
+      <TextBlock Text="ASIO und WASAPI Exclusive können das Gerät für andere Programme belegen. Kein automatischer Rückfall auf Shared. ASIO-Aufnahme und -Wiedergabe werden getrennt betrieben; kein Full-Duplex- oder ASIO-Loopback-Versprechen." TextWrapping="Wrap" Foreground="#A5B9C1"/>
+      <TextBlock x:Name="CapabilitiesText" TextWrapping="Wrap" Foreground="#A5D9CD"/>
+    </StackPanel></ScrollViewer>
+  </DockPanel>
 </Window>

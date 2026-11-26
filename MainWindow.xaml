@@ -351,6 +351,7 @@
     <StatusBar DockPanel.Dock="Bottom" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1,1,0,0" FontFamily="Segoe UI">
       <StatusBarItem x:Name="HintText" Width="300">Bereit</StatusBarItem><Separator/><StatusBarItem x:Name="StartText" Width="145" ToolTip="Anfang des markierten Bereichs">Start: —</StatusBarItem><StatusBarItem x:Name="EndText" Width="145" ToolTip="Ende des markierten Bereichs">Ende: —</StatusBarItem><StatusBarItem x:Name="SelectionText" Width="145" ToolTip="Länge des markierten Bereichs: Ende minus Start">Dauer: —</StatusBarItem><Separator/><StatusBarItem x:Name="SampleText" Width="230">Keine Auswahl</StatusBarItem>
     </StatusBar>
+    <Border DockPanel.Dock="Bottom" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0" Padding="8,3"><TextBlock x:Name="HardwareStatusText" Text="WASAPI Shared · Audiogerät wird beim Start gebunden" TextTrimming="CharacterEllipsis" Foreground="{StaticResource Muted}" ToolTip="{Binding Text, RelativeSource={RelativeSource Self}}"/></Border>
     <Border x:Name="MeterPanel" DockPanel.Dock="Bottom" Background="{StaticResource WaveSurface}" Padding="6,4,6,2" BorderBrush="{StaticResource Line}" BorderThickness="0,1,0,0"><local:StereoLevelMeter x:Name="StereoMeter" Height="82"/></Border>
 
     <Grid Margin="6">

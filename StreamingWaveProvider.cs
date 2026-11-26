@@ -145,7 +145,7 @@ internal sealed class LoopingWaveProvider : IWaveProvider, IDisposable
 /// Misst die Blöcke genau an der Stelle, an der WASAPI sie anfordert. Damit ist
 /// das Meter nicht von einer UI-Zeitberechnung oder der Fenstergröße abhängig.
 /// </summary>
-internal sealed class MeteringWaveProvider : IWaveProvider, IDisposable
+internal sealed class MeteringWaveProvider : IWaveProvider, IDisposable, IHardwareReadyWaveProvider
 {
     private readonly IWaveProvider source;
     private readonly float[] peaks;
@@ -161,6 +161,7 @@ internal sealed class MeteringWaveProvider : IWaveProvider, IDisposable
     }
 
     public WaveFormat WaveFormat { get; }
+    public bool HardwareReady => source is PreparedMultitrackPlayback or MultitrackWaveProvider or ArrayWaveProvider or IHardwareReadyWaveProvider { HardwareReady: true };
     public IReadOnlyList<float> Peaks => peaks;
     public IReadOnlyList<float> Rms => rms;
     public bool Clipped => Volatile.Read(ref clipped) != 0;

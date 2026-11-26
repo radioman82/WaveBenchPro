@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private long loopStartFrame;
     private long loopFrameCount;
     private readonly RecordingEngine recorder = new();
+    private AudioDeviceMonitor? hardwareMonitor;
     private bool recordingStopPending;
     private bool closeAfterRecording;
     private AudioDocument? recordingTargetDocument;
@@ -80,6 +81,18 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        recorder.RecordingFaulted += (_, _) => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            AudioHardwareSettings.RequireReselection(AudioDirection.Input);
+            if (recorder.IsRecording && !recordingStopPending) Record_Click(this, new RoutedEventArgs());
+        }));
+        try
+        {
+            hardwareMonitor = new AudioDeviceMonitor();
+            hardwareMonitor.Changed += change => Dispatcher.BeginInvoke(new Action(() => HardwareChanged(change)));
+        }
+        catch (Exception e) { HardwareStatusText.Text = "Geräteüberwachung nicht verfügbar: " + e.Message; }
+        Closed += (_, _) => hardwareMonitor?.Dispose();
         PreviewMouseMove += FileList_PreviewMouseMove;
         PreviewMouseLeftButtonUp += DocumentDrag_MouseUp;
         Sequencer.TrackSelected += track => selectedTrack = track;
@@ -1016,11 +1029,9 @@ public partial class MainWindow : Window
 
     private static IWavePlayer CreatePlayer()
     {
-        using var enumerator = new MMDeviceEnumerator();
-        var output = string.IsNullOrWhiteSpace(AudioHardwareSettings.OutputDeviceId)
-            ? enumerator.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia)
-            : enumerator.GetDevice(AudioHardwareSettings.OutputDeviceId);
-        return new WasapiOut(output, AudioClientShareMode.Shared, false, OutputLatencyMs);
+        if (AudioHardwareSettings.OutputReselectionRequired)
+            throw new InvalidOperationException("Das Ausgabegerät muss unter Optionen → Audio-Hardware erneut ausgewählt werden.");
+        return AudioHardwareBackend.Default.CreatePlayback(AudioHardwareSettings.Output);
     }
 
     private void Player_PlaybackStopped(object? sender, StoppedEventArgs e)
@@ -1032,8 +1043,10 @@ public partial class MainWindow : Window
             { BlockPlaybackFailed(failed, renderError); return; }
             if (e.Exception is not null)
             {
+                AudioHardwareSettings.RequireReselection(AudioDirection.Output);
                 StopPlayback();
                 HintText.Content = $"Wiedergabefehler: {e.Exception.Message}";
+                HardwareStatusText.Text = $"Audiogerät gestoppt: {e.Exception.Message}. Bitte unter Audio-Hardware erneut auswählen.";
             }
             else
             {
@@ -1140,10 +1153,16 @@ public partial class MainWindow : Window
             }
 
             StopPlayback();
+            if (AudioHardwareSettings.Input.DeviceId is null || AudioHardwareSettings.InputReselectionRequired)
+            {
+                var hardware = new AudioHardwareWindow { Owner = this };
+                if (hardware.ShowDialog() != true || AudioHardwareSettings.Input.DeviceId is null) return;
+            }
             recordingTargetDocument = document;
             recordingTargetFrame = document is null ? 0 : Waveform.CursorSample;
             recorder.LevelsChanged += Recorder_LevelChanged;
             recorder.Start(AudioHardwareSettings.InputDeviceId);
+            HardwareStatusText.Text = recorder.HardwareStatus?.ToString() ?? "Aufnahme aktiv";
             RecordButton.Content = "■";
             RecordButton.ToolTip = "Aufnahme stoppen (Strg+R)";
             HintText.Content = $"Aufnahme läuft ({recorder.CaptureFormat?.SampleRate:N0} Hz, {recorder.CaptureFormat?.Channels} Kanäle)…";
@@ -1153,7 +1172,7 @@ public partial class MainWindow : Window
             var wasStoppingRecording = recordingStopPending;
             recordingStopPending = false;
             RecordButton.IsEnabled = true;
-            recorder.Cancel();
+            try { recorder.Cancel(); } catch (Exception cleanup) { exception.Data["RecordingCleanup"] = cleanup.Message; }
             recordingTargetDocument = null;
             recorder.LevelsChanged -= Recorder_LevelChanged;
             RecordButton.Content = "●";
@@ -1202,6 +1221,7 @@ public partial class MainWindow : Window
         playbackMeter = meteredProvider;
         playbackProvider = meteredProvider;
         player.Init(meteredProvider);
+        HardwareStatusText.Text = (player as IAudioPlayback)?.Status.ToString() ?? "Wiedergabe aktiv";
         player.PlaybackStopped += Player_PlaybackStopped;
         playbackClock.Restart();
         player.Play();
@@ -1237,14 +1257,29 @@ public partial class MainWindow : Window
     {
         if (playbackDocument is null || !isPlaying) return;
         // Die hörbare Position liegt um die Ausgangspuffer-Latenz hinter der Wanduhr.
-        var elapsed = Math.Max(0d, playbackClock.Elapsed.TotalSeconds - OutputLatencyMs / 1000d);
+        var hardwareLatency = player is IAudioPlayback hardware ? hardware.AverageLatency.TotalMilliseconds : OutputLatencyMs;
+        var elapsed = Math.Max(0d, playbackClock.Elapsed.TotalSeconds - hardwareLatency / 1000d);
         var playedFrames = (long)(elapsed * playbackDocument.SampleRate);
+        if (player is IAudioPlayback positioned)
+        {
+            try
+            {
+                playedFrames = positioned.PositionFrames;
+                if (positioned.SourceError is { } sourceError) throw sourceError;
+                HardwareStatusText.Text = positioned.Status + $" · Vorlauf-Unterläufe: {positioned.ReadAheadUnderruns}";
+            }
+            catch (Exception error)
+            {
+                AudioHardwareSettings.RequireReselection(AudioDirection.Output);
+                StopPlayback(); HardwareStatusText.Text = "Audiogerät gestoppt: " + error.Message; return;
+            }
+        }
         if (blockPlayback is { WorkerError: { } workerError } failed)
         { BlockPlaybackFailed(failed, workerError); return; }
         var frame = blockPlayback is { } block
-            ? block.AudibleFrame(block.WaveFormat.SampleRate * OutputLatencyMs / 1000)
+            ? block.AudibleFrame((int)(block.WaveFormat.SampleRate * hardwareLatency / 1000))
             : multitrackMixer is { } mixer
-            ? mixer.AudibleFrame(mixer.WaveFormat.SampleRate * OutputLatencyMs / 1000)
+            ? mixer.AudibleFrame((int)(mixer.WaveFormat.SampleRate * hardwareLatency / 1000))
             : loopSelection && playbackFrameCount > 0
             ? playbackStartFrame + playedFrames % playbackFrameCount
             : Math.Min(playbackStartFrame + playedFrames, playbackStartFrame + playbackFrameCount);
@@ -1603,7 +1638,33 @@ public partial class MainWindow : Window
         HintText.Content = document.CanUndo ? "Rückgängig möglich." : "Keine Rückgängig-Schritte.";
     }
 
-    private void AudioHardware_Click(object sender, RoutedEventArgs e) { var dialog = new AudioHardwareWindow { Owner = this }; if (dialog.ShowDialog() == true) HintText.Content = "Audio-Hardwarezuordnung übernommen."; }
+    private void AudioHardware_Click(object sender, RoutedEventArgs e)
+    {
+        if (recorder.IsRecording || recordingStopPending || preparingMultitrack)
+        { HintText.Content = "Bitte zuerst Aufnahme bzw. Vorbereitung beenden."; return; }
+        StopPlayback();
+        var dialog = new AudioHardwareWindow { Owner = this };
+        if (dialog.ShowDialog() == true)
+        {
+            HintText.Content = "Audio-Hardwarezuordnung gespeichert.";
+            HardwareStatusText.Text = $"Gewählt: {AudioHardwareSettings.Output.Backend} · tatsächliche Gerätewerte nach dem nächsten Start";
+        }
+    }
+    private void HardwareChanged(AudioDeviceChange change)
+    {
+        if (recorder.IsRecording && recorder.HardwareStatus is { } input && AudioDeviceChangePolicy.RequiresStop(change, AudioHardwareSettings.Input, input, AudioDirection.Input))
+        {
+            AudioHardwareSettings.RequireReselection(AudioDirection.Input);
+            recorder.DeviceLost(new IOException("Das Aufnahmegerät wurde entfernt oder sein Format geändert. Teilaufnahme sichern; Gerät erneut auswählen."));
+        }
+        var active = player as IAudioPlayback ?? previewPlayer as IAudioPlayback;
+        if (active is not null && AudioDeviceChangePolicy.RequiresStop(change, AudioHardwareSettings.Output, active.Status, AudioDirection.Output))
+        {
+            AudioHardwareSettings.RequireReselection(AudioDirection.Output);
+            StopPlayback();
+            HardwareStatusText.Text = "Audiogerät oder Standardzuordnung geändert. Bitte unter Audio-Hardware erneut auswählen; kein automatischer Neustart.";
+        }
+    }
     private void About_Click(object sender, RoutedEventArgs e)
     {
         var version = typeof(MainWindow).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
