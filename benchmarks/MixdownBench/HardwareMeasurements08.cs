@@ -117,7 +117,8 @@ internal static class HardwareMeasurements08
     {
         var recovery = Path.Combine(Path.GetTempPath(), "WaveBench08Capture_" + Guid.NewGuid().ToString("N"));
         VerifiedSink? sink = null;
-        using var recorder = new RecordingEngine(_ => AudioHardwareBackend.Default.CreateCapture(request.Configuration), recovery,
+        IRecordingCapture? hardware = null;
+        using var recorder = new RecordingEngine(_ => hardware = AudioHardwareBackend.Default.CreateCapture(request.Configuration), recovery,
             count => new float[count], TimeSpan.FromSeconds(5), (path, format) => sink = new VerifiedSink(path, format));
         var watch = Stopwatch.StartNew();
         recorder.Start(request.Configuration.DeviceId);
@@ -129,8 +130,12 @@ internal static class HardwareMeasurements08
         Console.WriteLine(JsonSerializer.Serialize(new { result = "capture_completed", elapsed_s = watch.Elapsed.TotalSeconds,
             frames, sample_rate = recorded?.SampleRate, channels = recorded?.Channels,
             received_bytes = recorder.ReceivedBytes, written_bytes = recorder.WrittenBytes, sink_bytes = sink?.Bytes,
-            wav_payload_exact = sink?.Exact, wav_frames = sink?.Frames, payload_sha256 = sink?.Hash }, Json));
-        return recorded is not null && frames > 0 && sink is { Exact: true } && recorder.ReceivedBytes == recorder.WrittenBytes ? 0 : 1;
+            wav_payload_exact = sink?.Exact, wav_frames = sink?.Frames, payload_sha256 = sink?.Hash,
+            asio_callbacks = (hardware as AsioRecordingCapture)?.CallbackCount,
+            asio_callback_allocated_bytes_after_8_warmup = (hardware as AsioRecordingCapture)?.CallbackAllocatedBytes,
+            asio_between_callback_allocated_bytes_after_8_warmup = (hardware as AsioRecordingCapture)?.BetweenCallbackAllocatedBytes }, Json));
+        var allocationFree = hardware is not AsioRecordingCapture asio || (asio.CallbackAllocatedBytes == 0 && asio.BetweenCallbackAllocatedBytes == 0);
+        return recorded is not null && frames > 0 && sink is { Exact: true } && recorder.ReceivedBytes == recorder.WrittenBytes && allocationFree ? 0 : 1;
     }
     private sealed class VerifiedSink : IRecordingSink
     {

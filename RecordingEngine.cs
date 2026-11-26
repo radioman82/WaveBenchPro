@@ -131,7 +131,7 @@ public sealed class RecordingEngine : IDisposable
         catch (Exception startupError)
         {
             isRecording = false;
-            ReleaseCapture();
+            ReleaseCaptureOrPreserve(startupError);
             if (ReceivedBytes > 0)
             {
                 var recovery = PreserveRecordingFile();
@@ -151,17 +151,17 @@ public sealed class RecordingEngine : IDisposable
         catch (Exception exception)
         {
             SetRecordingError(exception);
-            ReleaseCapture();
+            ReleaseCaptureOrPreserve(exception);
             var recoveryPath = PreserveRecordingFile();
             throw new InvalidOperationException($"Das Audiogerät konnte nicht sauber gestoppt werden. Die bisherige Aufnahme wurde gesichert unter: {recoveryPath}", exception);
         }
         if (!stopped.Wait(stopTimeout))
         {
-            ReleaseCapture();
+            ReleaseCaptureOrPreserve();
             var recoveryPath = PreserveRecordingFile();
             throw new TimeoutException($"Das Audiogerät hat das Ende der Aufnahme nicht innerhalb von drei Sekunden bestätigt. Die bisherige Aufnahme wurde gesichert unter: {recoveryPath}");
         }
-        ReleaseCapture();
+        ReleaseCaptureOrPreserve();
 
         CloseWriter();
         if (recordingError is { } error)
@@ -206,10 +206,20 @@ public sealed class RecordingEngine : IDisposable
     {
         if (!isRecording) return;
         isRecording = false;
-        capture?.StopRecording();
-        stopped.Wait(stopTimeout);
-        ReleaseCapture();
-        DiscardRecordingFile();
+        try
+        {
+            capture?.StopRecording();
+            stopped.Wait(stopTimeout);
+            ReleaseCaptureOrPreserve();
+            DiscardRecordingFile();
+        }
+        catch (Exception error) when (recordingPath is not null)
+        {
+            SetRecordingError(error);
+            ReleaseCaptureOrPreserve(error);
+            var recovery = PreserveRecordingFile();
+            throw new InvalidOperationException($"Abbruch des Aufnahmegeräts fehlgeschlagen. Die Teilaufnahme wurde gesichert unter: {recovery}", error);
+        }
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
@@ -305,6 +315,20 @@ public sealed class RecordingEngine : IDisposable
         capture = null;
     }
 
+    private void ReleaseCaptureOrPreserve(Exception? prior = null)
+    {
+        try { ReleaseCapture(); }
+        catch (Exception error)
+        {
+            SetRecordingError(error);
+            Volatile.Write(ref acceptingCaptureData, 0);
+            CompleteCaptureQueue();
+            var recovery = recordingPath is null ? "keine temporäre Datei vorhanden" : PreserveRecordingFile();
+            throw new InvalidOperationException($"Das Aufnahmegerät ist noch nicht sicher freigegeben; kein paralleler Neustart. Die Teilaufnahme wurde gesichert unter: {recovery}",
+                prior is null ? error : new AggregateException(prior, error));
+        }
+    }
+
     private void DiscardRecordingFile()
     {
         CloseWriter();
@@ -381,18 +405,19 @@ public sealed class RecordingEngine : IDisposable
     public void Dispose()
     {
         if (disposed) return;
-        disposed = true;
         try
         {
             if (isRecording) Cancel();
-            ReleaseCapture();
+            ReleaseCaptureOrPreserve();
             DiscardRecordingFile();
         }
         catch (TimeoutException)
         {
             // The deferred cleanup owns the open file until the writer returns.
-            ReleaseCapture();
+            ReleaseCaptureOrPreserve();
         }
-        finally { stopped.Dispose(); }
+        // Failed native retirement leaves capture and its stop signal alive for retry.
+        disposed = true;
+        stopped.Dispose();
     }
 }

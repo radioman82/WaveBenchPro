@@ -8,6 +8,43 @@ namespace WellenEditorTests;
 public sealed class SpanRecordingTests
 {
     [Fact]
+    public void FailedEngineDisposalCanBeRetriedWithoutLosingTheRecoveryFile()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "WaveBenchSpanTest_" + Guid.NewGuid().ToString("N"));
+        var capture = new SpanCapture { FailDispose = true };
+        var engine = new RecordingEngine(_ => capture, root, count => new float[count]);
+        try
+        {
+            engine.Start(null); capture.Push(new byte[8]);
+            Assert.Throws<InvalidOperationException>(engine.Dispose);
+            var file = Assert.Single(Directory.GetFiles(root, "*.wav"));
+            capture.FailDispose = false; engine.Dispose(); engine.Dispose();
+            Assert.True(File.Exists(file));
+        }
+        finally { capture.FailDispose = false; engine.Dispose(); if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+    [Fact]
+    public void FailedNativeCaptureDisposalPreservesTheWaveAndBlocksReplacementUntilRetry()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "WaveBenchSpanTest_" + Guid.NewGuid().ToString("N"));
+        var capture = new SpanCapture { FailDispose = true };
+        var factoryCalls = 0;
+        using var engine = new RecordingEngine(_ => { factoryCalls++; return capture; }, root, count => new float[count]);
+        try
+        {
+            engine.Start(null); capture.Push(new byte[8]);
+            var error = Assert.Throws<InvalidOperationException>(() => engine.Finish());
+            Assert.Contains("gesichert unter", error.Message);
+            var file = Assert.Single(Directory.GetFiles(root, "*.wav"));
+            using (var reader = new WaveFileReader(file)) Assert.Equal(8, reader.Length);
+            Assert.Throws<IOException>(() => engine.Start(null));
+            Assert.Equal(1, factoryCalls);
+            capture.FailDispose = false;
+            engine.Start(null); Assert.Equal(2, factoryCalls); engine.Cancel();
+        }
+        finally { capture.FailDispose = false; if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+    [Fact]
     public void FailedNativeStartAfterFirstPacketPreservesThatPacket()
     {
         var root = Path.Combine(Path.GetTempPath(), "WaveBenchSpanTest_" + Guid.NewGuid().ToString("N"));
@@ -78,6 +115,7 @@ public sealed class SpanRecordingTests
     private sealed class SpanCapture : ISpanRecordingCapture
     {
         public bool FailStartAfterPacket;
+        public bool FailDispose;
         public WaveFormat WaveFormat { get; } = WaveFormat.CreateIeeeFloatWaveFormat(48000, 1);
         public AudioStreamStatus Status => new("fixed", "fake", AudioBackendKind.WasapiShared, WaveFormat, 50, 50);
         public event CapturePacketHandler? PacketAvailable;
@@ -90,6 +128,6 @@ public sealed class SpanRecordingTests
             Push(new byte[8]); throw new IOException("late native start failure");
         }
         public void StopRecording() => RecordingStopped?.Invoke(this, new StoppedEventArgs(null));
-        public void Dispose() { }
+        public void Dispose() { if (FailDispose) throw new IOException("native capture disposal failed"); }
     }
 }

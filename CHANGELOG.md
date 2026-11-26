@@ -7,6 +7,8 @@
 - Persisted input/output identity and mode, device-loss reselection, actual hardware status and partial-recording recovery.
 - Preallocated capture packets, read-ahead for file/live-plugin sources, failed native-retirement ownership and playback wait-handle cleanup.
 - Corrected persisted WAVEFORMATEXTENSIBLE decoding; expanded deterministic regressions and separate hardware measurements.
+- Avoided NAudio's per-packet ASIO capture event allocation through its public raw buffer API; preserved partial recordings on failed native retirement.
+- Kept a valid waveform viewport when undo shortens a recording beyond the previous visible window.
 - Exact NAudio MIT source notice and native codec provenance inventory. Redistribution and clean-host gates remain open.
 
 No new version/tag/release approval is implied; the existing beta.2 draft assets remain unchanged.

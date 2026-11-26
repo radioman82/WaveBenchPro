@@ -26,6 +26,7 @@ public sealed class WaveformView : FrameworkElement
 
     public event EventHandler? SelectionChanged;
     public int CursorSample => selectionEnd ?? selectionStart ?? viewportStart;
+    internal (int Start, int Count) Viewport => (viewportStart, viewportFrames);
 
     public WaveformView()
     {
@@ -54,8 +55,10 @@ public sealed class WaveformView : FrameworkElement
         sampleRate = audioSampleRate;
         timelineFrameCount = samples.Length / channels;
         peakCache = null;
-        viewportStart = Math.Clamp(viewportStart, 0, FrameCount);
-        viewportFrames = Math.Clamp(viewportFrames, 1, Math.Max(1, FrameCount - viewportStart));
+        // Undoing an appended recording can put the old viewport beyond the new EOF.
+        // Preserve its width where possible, then move it into the remaining document.
+        viewportFrames = Math.Clamp(viewportFrames, 1, Math.Max(1, FrameCount));
+        viewportStart = Math.Clamp(viewportStart, 0, Math.Max(0, FrameCount - viewportFrames));
         selectionStart = selectionStart.HasValue ? Math.Clamp(selectionStart.Value, 0, FrameCount) : null;
         selectionEnd = selectionEnd.HasValue ? Math.Clamp(selectionEnd.Value, 0, FrameCount) : null;
         InvalidateBaseDrawing();
