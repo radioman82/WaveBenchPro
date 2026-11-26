@@ -3,6 +3,12 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>WaveBenchPro</AssemblyName>
     <Product>WaveBench Pro</Product>
+    <Version>0.3.0-beta.1</Version>
+    <AssemblyVersion>0.3.0.0</AssemblyVersion>
+    <FileVersion>0.3.0.0</FileVersion>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=/_/WaveBenchPro</PathMap>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
     <Nullable>enable</Nullable>

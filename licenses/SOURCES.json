@@ -1,0 +1,14 @@
+{
+  "NAudio-MIT.txt": "https://raw.githubusercontent.com/naudio/NAudio/release/2.x/license.txt",
+  "libsndfile-COPYING.txt": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/COPYING",
+  "LGPL-2.1.txt": "https://raw.githubusercontent.com/libsndfile/libsndfile/1.2.2/COPYING",
+  "LGPL-2.0.txt": "https://www.gnu.org/licenses/old-licenses/lgpl-2.0.txt",
+  "libogg-COPYING.txt": "https://raw.githubusercontent.com/xiph/ogg/master/COPYING",
+  "libvorbis-COPYING.txt": "https://raw.githubusercontent.com/xiph/vorbis/master/COPYING",
+  "FLAC-COPYING.Xiph.txt": "https://raw.githubusercontent.com/xiph/flac/master/COPYING.Xiph",
+  "Opus-COPYING.txt": "https://raw.githubusercontent.com/xiph/opus/main/COPYING",
+  "mpg123-COPYING.txt": "https://raw.githubusercontent.com/madebr/mpg123/master/COPYING",
+  "Apache-2.0.txt": "https://www.apache.org/licenses/LICENSE-2.0.txt",
+  "WPF-LICENSE.TXT": "https://raw.githubusercontent.com/dotnet/wpf/main/LICENSE.TXT",
+  "WPF-THIRD-PARTY-NOTICES.TXT": "https://raw.githubusercontent.com/dotnet/wpf/main/THIRD-PARTY-NOTICES.TXT"
+}

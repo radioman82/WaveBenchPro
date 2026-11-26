@@ -1597,7 +1597,12 @@ public partial class MainWindow : Window
     }
 
     private void AudioHardware_Click(object sender, RoutedEventArgs e) { var dialog = new AudioHardwareWindow { Owner = this }; if (dialog.ShowDialog() == true) HintText.Content = "Audio-Hardwarezuordnung übernommen."; }
-    private void About_Click(object sender, RoutedEventArgs e) => MessageBox.Show(this, "WaveBench Pro\nKlassische Einzelspuren-Bearbeitung für Windows 11", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+    private void About_Click(object sender, RoutedEventArgs e)
+    {
+        var version = typeof(MainWindow).Assembly.GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+            .OfType<System.Reflection.AssemblyInformationalVersionAttribute>().FirstOrDefault()?.InformationalVersion.Split('+')[0] ?? "unbekannt";
+        MessageBox.Show(this, $"WaveBench Pro {version}\nAudio-Editor und Mehrspur-Sequenzer für Windows", "Info", MessageBoxButton.OK, MessageBoxImage.Information);
+    }
     private void Exit_Click(object sender, RoutedEventArgs e) => Close();
     private void FileList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
