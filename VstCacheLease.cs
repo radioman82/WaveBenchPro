@@ -83,6 +83,17 @@ internal sealed class VstCacheLease : IDisposable
                         if (fileName.Length != 45 || !Guid.TryParseExact(fileName[13..], "N", out _)) continue;
                         if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0) File.Delete(file);
                     }
+                    // WriteWave publishes atomically through a hidden GUID temp
+                    // file. A hard process exit can leave it before publication.
+                    foreach (var file in Directory.EnumerateFiles(directory, ".WaveBenchVst_*.tmp", SearchOption.TopDirectoryOnly))
+                    {
+                        var fileName = Path.GetFileName(file);
+                        if (fileName.Length != 87 || !fileName.StartsWith(".WaveBenchVst_", StringComparison.Ordinal) ||
+                            fileName.Substring(46, 5) != ".wav." || !fileName.EndsWith(".tmp", StringComparison.Ordinal) ||
+                            !Guid.TryParseExact(fileName.Substring(14, 32), "N", out _) ||
+                            !Guid.TryParseExact(fileName.Substring(51, 32), "N", out _)) continue;
+                        if ((File.GetAttributes(file) & FileAttributes.ReparsePoint) == 0) File.Delete(file);
+                    }
                     var reservation = Path.Combine(directory, "reservation.txt");
                     if (File.Exists(reservation)) File.Delete(reservation);
                 }

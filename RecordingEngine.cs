@@ -126,7 +126,11 @@ public sealed class RecordingEngine : IDisposable
             recorded = sinkFactory(recordingPath, format);
             captureQueue = new BlockingCollection<CaptureBlock>(CaptureQueueCapacity);
             Volatile.Write(ref acceptingCaptureData, 1);
-            captureWriterTask = Task.Run(DrainCaptureQueue);
+            // This worker blocks on a capture queue and synchronous file writes.
+            // It must not wait for thread-pool injection while native capture is
+            // already filling the bounded queue.
+            captureWriterTask = Task.Factory.StartNew(DrainCaptureQueue, CancellationToken.None,
+                TaskCreationOptions.LongRunning, TaskScheduler.Default);
             capture.DataAvailable += OnDataAvailable;
             capture.RecordingStopped += OnRecordingStopped;
             capture.StartRecording();

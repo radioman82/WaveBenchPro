@@ -70,10 +70,12 @@ public sealed class RecordingEngineTests
         var capture = new FakeCapture(WaveFormat.CreateIeeeFloatWaveFormat(48000, 1));
         using var entered = new ManualResetEventSlim();
         using var release = new ManualResetEventSlim();
-        using var scope = new RecordingTestScope(capture, sinkFactory: (path, format) => new GateRecordingSink(path, format, entered, release));
+        GateRecordingSink? gatedSink = null;
+        using var scope = new RecordingTestScope(capture, sinkFactory: (path, format) => gatedSink = new GateRecordingSink(path, format, entered, release));
         scope.Engine.Start(null);
         capture.Push(new[] { .5f, -.25f });
         Assert.True(entered.Wait(TimeSpan.FromSeconds(2)), "injected sink should be blocked inside its first disk write");
+        Assert.False(gatedSink!.WriteWasThreadPool);
 
         var nextBlock = new byte[sizeof(float) * 2];
         Buffer.BlockCopy(new[] { .125f, -.75f }, 0, nextBlock, 0, nextBlock.Length);
@@ -188,6 +190,7 @@ public sealed class RecordingEngineTests
 
     private sealed class GateRecordingSink : IRecordingSink
     {
+        public bool WriteWasThreadPool { get; private set; }
         private readonly WaveFileWriter writer;
         private readonly ManualResetEventSlim entered;
         private readonly ManualResetEventSlim release;
@@ -202,6 +205,7 @@ public sealed class RecordingEngineTests
 
         public void Write(byte[] buffer, int offset, int count)
         {
+            WriteWasThreadPool = Thread.CurrentThread.IsThreadPoolThread;
             if (Interlocked.Exchange(ref hasWaited, 1) == 0)
             {
                 entered.Set();

@@ -7,6 +7,26 @@ namespace WellenEditorTests;
 public sealed class VstCacheLeaseTests
 {
     [Fact]
+    public void CrashCleanupRemovesOnlyRecognizableUnpublishedExportFiles()
+    {
+        var root = Path.Combine(Path.GetTempPath(), $"wavebench_lease_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        try
+        {
+            var orphan = Path.Combine(root, $"wbvst-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(orphan);
+            File.WriteAllText(Path.Combine(orphan, "owner.marker"), "WaveBenchVstCache/v1");
+            var temporary = Path.Combine(orphan, $".WaveBenchVst_{Guid.NewGuid():N}.wav.{Guid.NewGuid():N}.tmp");
+            var unrecognized = Path.Combine(orphan, ".WaveBenchVst_unrelated.tmp");
+            File.WriteAllText(temporary, "unfinished audio");
+            File.WriteAllText(unrecognized, "keep");
+            using var next = VstCacheLease.Open(root);
+            Assert.False(File.Exists(temporary));
+            Assert.True(File.Exists(unrecognized));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+    [Fact]
     public async Task ConcurrentSessionsReserveWithoutOverwritingEachOther()
     {
         var root = Path.Combine(Path.GetTempPath(), $"wavebench_lease_test_{Guid.NewGuid():N}");
