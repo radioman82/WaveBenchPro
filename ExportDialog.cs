@@ -58,7 +58,7 @@ internal sealed class ExportDialog : Window
         hintBlock.Text = "Der Export erstellt eine Kopie. Das geöffnete Dokument bleibt unverändert.";
 
         BuildQualityItems();
-        pathBox.Text = $"{DefaultStem}_export{Extension}";
+        pathBox.Text = ExportPathResolver.Resolve($"{DefaultStem}_export{Extension}", document.SourcePath);
 
         var browseButton = new Button { Content = "Durchsuchen...", Margin = new Thickness(8, 0, 0, 0), MinWidth = 110 };
         browseButton.Click += Browse_Click;
@@ -206,7 +206,7 @@ internal sealed class ExportDialog : Window
         }
 
         string fullPath;
-        try { fullPath = Path.GetFullPath(WithExtension(raw, Extension)); }
+        try { fullPath = ExportPathResolver.Resolve(WithExtension(raw, Extension), document.SourcePath); }
         catch (Exception exception)
         {
             MessageBox.Show(this, $"Ungültiger Zielpfad.\n\n{exception.Message}", "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Warning);

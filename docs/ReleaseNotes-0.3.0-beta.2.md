@@ -5,6 +5,7 @@ Windows 11 x64 portable development beta. This is an unsigned draft pending hard
 ## Changes
 
 - Fixed export failing when its worker accessed WPF dialog controls; parameters are now captured on the UI thread.
+- Export destinations default to the source folder, or Documents for unsaved audio, rather than an arbitrary launcher working directory.
 - Supersedes the unapproved beta.1 draft without moving its existing tag.
 
 - Classic waveform editing and a multitrack sequencer with track inserts, mixer controls and selection loops.
