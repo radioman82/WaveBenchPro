@@ -1,0 +1,80 @@
+[
+  {
+    "file": "FLAC.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 249344,
+    "sha256": "b8a6e47a7f8e52bf8e3aa007b922598da69d58103a8a6cc95446c77895726067"
+  },
+  {
+    "file": "libmp3lame.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 371200,
+    "sha256": "d54cf06d3817ca37fdb942695cb0d088bf33c4b5d0b15bf2376bfcda7fbb4177"
+  },
+  {
+    "file": "mpg123.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 299008,
+    "sha256": "89bc1f6a3c3ca9addf1d98edb9f9e5663aacc99137434f7630796756ed0838b6"
+  },
+  {
+    "file": "ogg.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 30720,
+    "sha256": "66bb7e8758462cdae0ecc3a48ee56b42da1b010568bfe2fec195d00070eeb968"
+  },
+  {
+    "file": "opus.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 418816,
+    "sha256": "2661f4d5b325ab63017540cfdb4807fb287df0eebdc2bac2985337e7b1c0dd25"
+  },
+  {
+    "file": "out123.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 44032,
+    "sha256": "15934cdcd57897e2e7e0dacf1f177e1354ce19604969e03df79d9c35ca1a4d22"
+  },
+  {
+    "file": "sndfile.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 560640,
+    "sha256": "0474d7171cbba77891f9c98f0356187ba291b204d422578216eca160c8813429"
+  },
+  {
+    "file": "syn123.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 115712,
+    "sha256": "eee02a08646818d1f1ebcaa6618f1374fc4d21af86ac2f9f71bd69d28d2085a9"
+  },
+  {
+    "file": "vorbis.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 720896,
+    "sha256": "ce1423fb25f528b65039afa6bf2970d09296a147ddefa9a83c657a13b21bea62"
+  },
+  {
+    "file": "vorbisenc.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 564736,
+    "sha256": "fbf1bf4c8c2602756af61919b2ac02e70935c27a7c8a52039d44391bab7eae8b"
+  },
+  {
+    "file": "vorbisfile.dll",
+    "package": "org.sndfile.runtime.win-x64/1.2.2",
+    "bytes": 36864,
+    "sha256": "2770c504b2eb2fc121e485b0e567b041b6b8460d33d2b1ae1b6a999682ffdc48"
+  },
+  {
+    "file": "libmp3lame.32.dll",
+    "package": "NAudio.Lame/2.1.0",
+    "bytes": 697344,
+    "sha256": "91d3c0cc833265066c51408d940faaf76c5b8fc5bda854540a9cc6c88b1d1f20"
+  },
+  {
+    "file": "libmp3lame.64.dll",
+    "package": "NAudio.Lame/2.1.0",
+    "bytes": 1081856,
+    "sha256": "71dba147b6c16d8d0f012b8e657d52e12cb8796a659e1151200d0a6c8b04bce3"
+  }
+]
