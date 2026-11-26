@@ -5,6 +5,8 @@ using Microsoft.Win32.SafeHandles;
 using NAudio.Wave;
 using WellenEditor;
 
+if (args.Length == 2 && args[0] == "hardware08") return await HardwareMeasurements08.Run(args[1]);
+
 if (args.Length == 2 && args[0] == "vst-check") return PlaybackMeasurements.CheckVst(args[1]);
 if (args.Length == 2 && args[0] == "compare") return PlaybackMeasurements.CompareMusic(args[1]);
 if (args.Length == 1 && args[0] == "symlink-check") return PlaybackMeasurements.CheckSymlink();
