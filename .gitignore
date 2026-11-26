@@ -19,3 +19,20 @@ TestResults/
 .vs/
 *.user
 *.suo
+
+# Private project material and internal development exchanges
+WaveBenchPro_Audit_Ergebnis*.md
+WaveBenchPro_Arbeitsauftrag*.md
+WaveBenchPro_Speicherarchitektur_*.md
+WaveBenchPro_Ausbauplan.pdf
+AGENTS.local.md
+*.log
+*.tmp
+*.wbpeaks
+*.dmp
+artifacts/
+benchmarks/scratch/
+local-audio/
+.env
+.env.*
+!.env.example

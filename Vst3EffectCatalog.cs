@@ -20,16 +20,10 @@ public sealed record Vst3ScanProgress(int Examined, int Found, string CurrentPat
 /// <summary>Durchsucht Verzeichnisse rekursiv und liest die exportierten Effekt-Klassen aus.</summary>
 public static class Vst3EffectCatalog
 {
-    private static readonly string[] UserFolders =
-    {
-        @"G:\vst3", @"G:\vst3-64", @"G:\vst-plugins", @"G:\vst-plugins\VST3"
-    };
-
     /// <summary>Alle bekannten Standard-VST3-Ordner plus die Wurzel jedes fixen Laufwerks.</summary>
     public static IReadOnlyList<string> GetDefaultFolders()
     {
         var folders = new HashSet<string>(Vst3PluginScanner.DefaultSearchPaths, StringComparer.OrdinalIgnoreCase);
-        foreach (var folder in UserFolders) folders.Add(folder);
         foreach (var drive in DriveInfo.GetDrives().Where(d => d.IsReady && d.DriveType == DriveType.Fixed))
         {
             var root = drive.RootDirectory.FullName;
