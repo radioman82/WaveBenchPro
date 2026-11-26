@@ -4,12 +4,20 @@ using NAudio.Wave;
 
 namespace WellenEditor;
 
+internal interface IPreparedPlaybackSession : IDisposable
+{
+    int SampleRate { get; }
+    long FrameCount { get; }
+    Task Completion { get; }
+    IBlockAudioRenderer OpenRenderer(long start, long count, bool loop, int blockFrames, long? initialFrame = null);
+}
+
 /// <summary>
 /// Private, immutable post-insert track files. WSOLA, resampling and DSP run
 /// continuously once; seeks read that exact output without repeating the prefix.
 /// Gain, pan, mute and solo are deliberately applied after the cached inserts.
 /// </summary>
-internal sealed class PreparedMultitrackSession : IDisposable
+internal sealed class PreparedMultitrackSession : IPreparedPlaybackSession
 {
     private sealed record TrackFile(MultitrackTrack Controls, string Path, long Frames);
     private readonly List<TrackFile> files = new();
@@ -17,8 +25,11 @@ internal sealed class PreparedMultitrackSession : IDisposable
     private readonly object gate = new();
     private int readers;
     private bool closing;
+    private readonly TaskCompletionSource completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task Completion => completion.Task;
     public int SampleRate { get; }
     public long FrameCount { get; }
+    internal long PreparedBytes => files.Sum(file => new FileInfo(file.Path).Length);
 
     public PreparedMultitrackSession(MultitrackProject snapshot, IReadOnlyList<MultitrackTrack> controls,
         CancellationToken token = default)
@@ -53,12 +64,15 @@ internal sealed class PreparedMultitrackSession : IDisposable
         }
     }
 
-    public Renderer OpenRenderer(long start, long count, bool loop, int blockFrames)
+    IBlockAudioRenderer IPreparedPlaybackSession.OpenRenderer(long start, long count, bool loop, int blockFrames, long? initialFrame)
+        => OpenRenderer(start, count, loop, blockFrames, initialFrame);
+
+    public Renderer OpenRenderer(long start, long count, bool loop, int blockFrames, long? initialFrame = null)
     {
         lock (gate)
         {
             ObjectDisposedException.ThrowIf(closing, this);
-            var renderer = new Renderer(this, start, count, loop, blockFrames);
+            var renderer = new Renderer(this, start, count, loop, blockFrames, initialFrame);
             readers++;
             return renderer;
         }
@@ -71,7 +85,7 @@ internal sealed class PreparedMultitrackSession : IDisposable
         {
             cleanup = --readers == 0 && closing;
         }
-        if (cleanup) lease.Dispose();
+        if (cleanup) FinishCleanup();
     }
     public void Dispose()
     {
@@ -82,7 +96,13 @@ internal sealed class PreparedMultitrackSession : IDisposable
             closing = true;
             cleanup = readers == 0;
         }
-        if (cleanup) lease.Dispose();
+        if (cleanup) FinishCleanup();
+    }
+
+    private void FinishCleanup()
+    {
+        try { lease.Dispose(); completion.TrySetResult(); }
+        catch (Exception error) { completion.TrySetException(error); throw; }
     }
 
     internal sealed class Renderer : ICancellableBlockAudioRenderer, IPositionedBlockRenderer
@@ -97,13 +117,14 @@ internal sealed class PreparedMultitrackSession : IDisposable
         public long Position => position;
         public int SampleRate => session.SampleRate;
         public int BlockFrames { get; }
-        internal Renderer(PreparedMultitrackSession session, long start, long count, bool loop, int blockFrames)
+        internal Renderer(PreparedMultitrackSession session, long start, long count, bool loop, int blockFrames, long? initialFrame)
         {
-            if (start < 0 || start >= session.FrameCount || count <= 0 || count > long.MaxValue - start)
+            if (start < 0 || start >= session.FrameCount || count <= 0 || count > session.FrameCount - start)
                 throw new ArgumentOutOfRangeException(nameof(start), "Auswahl liegt außerhalb des Projekts.");
             if (blockFrames is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(blockFrames));
             this.session = session; this.start = start; end = start + count;
-            this.loop = loop; position = start; BlockFrames = blockFrames;
+            this.loop = loop; position = initialFrame ?? start; BlockFrames = blockFrames;
+            if (position < start || position >= end) throw new ArgumentOutOfRangeException(nameof(initialFrame));
             scratch = new float[blockFrames * 2];
             try
             {
@@ -159,114 +180,5 @@ internal sealed class PreparedMultitrackSession : IDisposable
             try { session.Release(); } catch (Exception error) { (errors ??= new()).Add(error); }
             if (errors is not null) throw new AggregateException(errors);
         }
-    }
-}
-
-/// <summary>Control-thread publication with independent queues for transport generations.</summary>
-internal sealed class PreparedMultitrackPlayback : IWaveProvider, IDisposable
-{
-    private readonly PreparedMultitrackSession session;
-    private readonly SemaphoreSlim transportGate = new(1);
-    private readonly object publicationGate = new();
-    private BufferedBlockWaveProvider? queue;
-    private int generation, disposed;
-    private int publishedGeneration;
-    private bool transportFailed;
-    private BufferedBlockWaveProvider? retiringQueue;
-    private Task sessionCleanup = Task.CompletedTask;
-    private Exception? cleanupError;
-    private long underruns;
-    public WaveFormat WaveFormat { get; }
-    public long FrameCount => session.FrameCount;
-    public long UnderrunCount => Interlocked.Read(ref underruns) + (Volatile.Read(ref queue)?.UnderrunCount ?? 0);
-    public Exception? WorkerError => Volatile.Read(ref queue)?.WorkerError ?? Volatile.Read(ref cleanupError);
-    public int BufferBlocks { get; }
-    public int BlockFrames { get; }
-    public PreparedMultitrackPlayback(PreparedMultitrackSession session, int blockFrames = 1024, int bufferBlocks = 8)
-    {
-        if (blockFrames is < 1 or > 65536 || bufferBlocks is < 2 or > 256) throw new ArgumentOutOfRangeException();
-        this.session = session; BlockFrames = blockFrames; BufferBlocks = bufferBlocks;
-        WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(session.SampleRate, 2);
-    }
-    public async Task ConfigurePlaybackAsync(long start, long count, bool loop)
-    {
-        var version = Interlocked.Increment(ref generation);
-        await transportGate.WaitAsync().ConfigureAwait(false);
-        BufferedBlockWaveProvider? next = null;
-        try
-        {
-            if (disposed != 0 || version != Volatile.Read(ref generation)) return;
-            if (transportFailed) throw new InvalidOperationException("Der bisherige Audioworker muss erst beendet werden.");
-            // Stop and finish the old producer before creating a new one. A stuck
-            // source cannot accumulate workers on repeated transport requests.
-            var previous = Interlocked.Exchange(ref queue, null);
-            if (previous is not null)
-            {
-                Volatile.Write(ref retiringQueue, previous);
-                Interlocked.Add(ref underruns, previous.UnderrunCount);
-                if (!await previous.StopAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false))
-                {
-                    transportFailed = true;
-                    throw new TimeoutException("Der bisherige Audioworker antwortet nicht. Wiedergabe bitte stoppen.");
-                }
-            }
-            next = new BufferedBlockWaveProvider(session.OpenRenderer(start, count, loop, BlockFrames), BufferBlocks);
-            if (!await next.PrefillAsync(Math.Min(2, BufferBlocks), TimeSpan.FromSeconds(5)).ConfigureAwait(false))
-                throw new TimeoutException("Der Audiopuffer konnte nicht rechtzeitig vorbereitet werden.");
-            lock (publicationGate)
-            {
-                if (disposed != 0 || version != Volatile.Read(ref generation)) return;
-                Volatile.Write(ref publishedGeneration, version);
-                Volatile.Write(ref queue, next);
-                next = null;
-            }
-        }
-        finally { next?.Dispose(); transportGate.Release(); }
-    }
-    public long AudibleFrame(int latencyFrames) => Volatile.Read(ref queue)?.AudibleFrame(latencyFrames) ?? 0;
-    public int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
-    public int Read(Span<byte> buffer)
-    {
-        var current = Volatile.Read(ref queue);
-        var version = Volatile.Read(ref generation);
-        if (current is null || Volatile.Read(ref publishedGeneration) != version)
-        { buffer.Clear(); return disposed == 0 ? buffer.Length : 0; }
-        var read = current.Read(buffer);
-        if (version != Volatile.Read(ref generation) || !ReferenceEquals(current, Volatile.Read(ref queue)))
-        { buffer.Clear(); return buffer.Length; }
-        return read;
-    }
-    public void Dispose()
-    {
-        lock (publicationGate)
-        {
-            if (Interlocked.Exchange(ref disposed, 1) != 0) return;
-            Interlocked.Increment(ref generation);
-            var current = Interlocked.Exchange(ref queue, null);
-            if (current is not null) Volatile.Write(ref retiringQueue, current);
-            current?.Dispose();
-            sessionCleanup = Task.Run(() =>
-            {
-                try { session.Dispose(); }
-                catch (Exception error) { Volatile.Write(ref cleanupError, error); }
-            });
-        }
-    }
-    public async Task<bool> StopAsync(TimeSpan timeout)
-    {
-        var clock = System.Diagnostics.Stopwatch.StartNew();
-        Dispose();
-        if (!await transportGate.WaitAsync(timeout).ConfigureAwait(false)) return false;
-        try
-        {
-            var remaining = timeout - clock.Elapsed;
-            if (remaining <= TimeSpan.Zero) return false;
-            var previous = Volatile.Read(ref retiringQueue);
-            if (previous is not null && !await previous.StopAsync(remaining).ConfigureAwait(false)) return false;
-            remaining = timeout - clock.Elapsed;
-            if (remaining <= TimeSpan.Zero) return false;
-            return await Task.WhenAny(sessionCleanup, Task.Delay(remaining)).ConfigureAwait(false) == sessionCleanup;
-        }
-        finally { transportGate.Release(); }
     }
 }

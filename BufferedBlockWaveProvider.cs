@@ -51,6 +51,10 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     public long TimelineFramesRead => AudioFramesRead;
     public Exception? WorkerError => Volatile.Read(ref workerError);
     internal Task Completion => worker;
+    internal Task ShutdownCompletion
+    {
+        get { lock (lifetimeGate) return Task.WhenAll(worker, cancellationCompletion); }
+    }
     internal int Capacity => blocks.Length;
     internal long AudibleFrame(int latencyFrames)
     {
@@ -61,7 +65,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
     }
 
     /// <summary>Prepares blocks outside the audio callback; false indicates timeout.</summary>
-    internal async Task<bool> PrefillAsync(int minimumBlocks, TimeSpan timeout, CancellationToken token = default)
+    internal async Task<bool> PrefillAsync(int minimumBlocks, TimeSpan timeout, CancellationToken token = default, Func<bool>? superseded = null)
     {
         if (minimumBlocks < 1 || minimumBlocks > blocks.Length) throw new ArgumentOutOfRangeException(nameof(minimumBlocks));
         if (timeout < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
@@ -69,6 +73,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
         while (true)
         {
             token.ThrowIfCancellationRequested();
+            if (superseded?.Invoke() == true) throw new OperationCanceledException("Die Wiedergabevorbereitung wurde ersetzt.");
             if (Volatile.Read(ref complete) != 0)
             {
                 if (WorkerError is { } error) throw new InvalidOperationException("Die Audiovorbereitung ist fehlgeschlagen.", error);
@@ -90,7 +95,7 @@ internal sealed class BufferedBlockWaveProvider : IWaveProvider, IDisposable
         starts = new long[capacity];
         timelineHistory = new long[checked(renderer.SampleRate * 2)];
         initialFrame = renderer is IPositionedBlockRenderer positioned ? positioned.Position : 0;
-        worker = Task.Run(Produce);
+        worker = Task.Factory.StartNew(Produce, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
     }
 
     private void Produce()

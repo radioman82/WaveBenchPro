@@ -188,6 +188,9 @@ public sealed class SequencerView : UserControl
         private double mouseOffset;
         private DrawingGroup? background;
         private bool selectingRange;
+        private bool rangeMoved;
+        private double pointerDownX;
+        private double? priorAnchor, priorEdge;
         private enum RangeDrag { Create, Left, Right, Move }
         private RangeDrag rangeDrag;
         private double originalStart, originalEnd, dragBeat;
@@ -217,6 +220,8 @@ public sealed class SequencerView : UserControl
                         RefreshDrawing(); owner.PlaybackRangeChanged?.Invoke(); e.Handled = true; return;
                     }
                     dragBeat = owner.scale.XToBeat(p.X);
+                    pointerDownX = p.X; rangeMoved = false;
+                    priorAnchor = owner.rangeAnchor; priorEdge = owner.rangeEdge;
                     rangeDrag = RangeDrag.Create;
                     if (owner.rangeAnchor is { } a && owner.rangeEdge is { } b && a != b)
                     {
@@ -240,6 +245,8 @@ public sealed class SequencerView : UserControl
             {
                 if (selectingRange && e.LeftButton == MouseButtonState.Pressed)
                 {
+                    if (!rangeMoved && Math.Abs(e.GetPosition(this).X - pointerDownX) < 3) return;
+                    rangeMoved = true;
                     var beat = Math.Max(0, Math.Round(owner.scale.XToBeat(e.GetPosition(this).X)));
                     var oldAnchor = owner.rangeAnchor; var oldEdge = owner.rangeEdge;
                     switch (rangeDrag)
@@ -271,8 +278,9 @@ public sealed class SequencerView : UserControl
                 if (selectingRange)
                 {
                     selectingRange = false;
-                    if (rangeDrag == RangeDrag.Create && owner.rangeAnchor == owner.rangeEdge && owner.project is { } project)
+                    if (!rangeMoved && owner.project is { } project)
                     {
+                        owner.rangeAnchor = priorAnchor; owner.rangeEdge = priorEdge;
                         var frame = (long)Math.Max(0, Math.Round(e.GetPosition(this).X / PixelsPerSecond * project.SampleRate));
                         owner.PositionSeconds = frame / (double)project.SampleRate;
                         owner.SeekRequested?.Invoke(frame);

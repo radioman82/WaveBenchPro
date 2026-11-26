@@ -30,6 +30,7 @@ public partial class MainWindow : Window
     private int blockBufferBlocks = 8;
     private Task<bool> blockStopPending = Task.FromResult(true);
     private PreparedMultitrackPlayback? retiringBlock;
+    private Task unpublishedPreparationCleanup = Task.CompletedTask;
     private IWavePlayer? previewPlayer;
     private bool isPlaying;
     // Render-Priorität verhindert, dass Cursor und Meter bei einer großen
@@ -102,14 +103,14 @@ public partial class MainWindow : Window
         };
         Sequencer.PlaybackRangeChanged += () =>
         {
-            HintText.Content = Sequencer.GetPlaybackRange() is null ? "Mehrspur-Auswahl aufgehoben." : "Mehrspur-Auswahl gesetzt. ⟳ wiederholt den Bereich.";
+            HintText.Content = Sequencer.GetPlaybackRange() is null ? "Mehrspur-Auswahl aufgehoben." : "Mehrspur-Auswahl gesetzt – der markierte Bereich wird wiederholt.";
             UpdateMultitrackPlaybackRange();
             UpdateSelectionText();
         };
         Sequencer.SeekRequested += async frame =>
         {
-            if (blockPlayback is not { } active) return;
-            try { await active.ConfigurePlaybackAsync(frame, Math.Max(1, active.FrameCount - frame), loopPlaybackEnabled); }
+            if (blockPlayback is not { } active) { multitrackMixer?.Seek(frame); return; }
+            try { await active.SeekAsync(frame); }
             catch (Exception exception) { BlockPlaybackFailed(active, exception); }
         };
         Sequencer.RemoveTrackRequested += track =>
@@ -199,6 +200,7 @@ public partial class MainWindow : Window
 
     private void EditView_Click(object sender, RoutedEventArgs e)
     {
+        StopPlayback();
         EditorPanel.Visibility = Visibility.Visible;
         MultitrackPanel.Visibility = Visibility.Collapsed;
         EditViewButton.Style = (Style)FindResource("ViewTabActiveButton");
@@ -413,13 +415,13 @@ public partial class MainWindow : Window
             var range = Sequencer.GetPlaybackRange();
             var start = range?.Start ?? 0;
             if (start >= provider.FrameCount) throw new InvalidOperationException("Die Auswahl liegt hinter dem letzten Sample. Bitte einen Bereich mit Audio markieren.");
-            var count = range?.Count ?? provider.FrameCount;
-            provider.ConfigurePlayback(start, count, loopPlaybackEnabled);
+            var count = Math.Min(range?.Count ?? provider.FrameCount, provider.FrameCount - start);
+            provider.ConfigurePlayback(start, count, range.HasValue || loopPlaybackEnabled);
             multitrackMixer = provider;
             multitrackPlaybackDocument = AudioDocument.FromSamples(new float[2], 2, multitrack.SampleRate);
             loopSelection = false; // Multitrack mixer wraps internally and accepts live range updates.
             StartPlayback(start, count, multitrackPlaybackDocument, provider);
-            var status = loopPlaybackEnabled ? "Mehrspur-Schleife läuft." : "Mehrspurprojekt wird gemeinsam wiedergegeben.";
+            var status = range.HasValue || loopPlaybackEnabled ? "Mehrspur-Schleife läuft." : "Mehrspurprojekt wird gemeinsam wiedergegeben.";
             HintText.Content = provider.PreparationWarnings.Count == 0
                 ? status
                 : $"{status} Hinweis: {string.Join(" | ", provider.PreparationWarnings)}";
@@ -480,6 +482,7 @@ public partial class MainWindow : Window
         var progress = new Window { Owner = this, Title = "Wiedergabe vorbereiten", Content = panel,
             SizeToContent = SizeToContent.WidthAndHeight, ResizeMode = ResizeMode.NoResize, WindowStartupLocation = WindowStartupLocation.CenterOwner };
         var finished = false;
+        Exception? preparationError = null;
         cancel.Click += (_, _) => { cancellation.Cancel(); cancel.IsEnabled = false; };
         progress.Closing += (_, args) => { if (!finished) { args.Cancel = true; cancellation.Cancel(); cancel.IsEnabled = false; } };
         try
@@ -488,6 +491,9 @@ public partial class MainWindow : Window
                 !await previous.StopAsync(TimeSpan.FromSeconds(2)))
                 throw new TimeoutException("Die vorherige Wiedergabe ist noch nicht beendet. Bitte den blockierten Geräte- oder Dateizugriff prüfen.");
             retiringBlock = null;
+            if (await Task.WhenAny(unpublishedPreparationCleanup, Task.Delay(TimeSpan.FromSeconds(2))) != unpublishedPreparationCleanup)
+                throw new TimeoutException("Die vorherige Audiovorbereitung hält noch Ressourcen.");
+            await unpublishedPreparationCleanup;
             var snapshot = multitrack.Snapshot();
             var controls = multitrack.Tracks.ToArray();
             if (Content is UIElement workspace) workspace.IsEnabled = false;
@@ -499,8 +505,16 @@ public partial class MainWindow : Window
             session = null;
             var range = Sequencer.GetPlaybackRange();
             var start = range?.Start ?? Math.Clamp(cursor ?? (long)(Sequencer.PositionSeconds * multitrack.SampleRate), 0, prepared.FrameCount - 1);
-            var count = range?.Count ?? prepared.FrameCount - start;
-            await prepared.ConfigurePlaybackAsync(start, count, loopPlaybackEnabled);
+            var count = Math.Min(range?.Count ?? prepared.FrameCount - start, prepared.FrameCount - start);
+            var configuring = prepared.ConfigurePlaybackAsync(start, count, range.HasValue || loopPlaybackEnabled, cancellation.Token);
+            try { await configuring.WaitAsync(cancellation.Token); }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                // The transport still owns an opening/blocked reader. Retire it
+                // below, without making the Cancel button wait for native I/O.
+                _ = ObservePlaybackCleanupAsync(configuring);
+                throw;
+            }
             cancellation.Token.ThrowIfCancellationRequested();
             if (version != playbackPreparationVersion) return;
             blockPlayback = prepared;
@@ -512,18 +526,50 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { HintText.Content = "Audiovorbereitung abgebrochen."; }
         catch (Exception exception)
         {
-            StopPlayback();
-            MessageBox.Show(this, $"Experimentelle Wiedergabe konnte nicht vorbereitet werden.\n\n{exception.Message}\n\nDie bisherige Engine kann unter Optionen gewählt werden.",
-                "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
+            preparationError = exception;
+            try { StopPlayback(); } catch (Exception cleanup) { exception.Data["PlaybackStopError"] = cleanup; }
         }
         finally
         {
-            prepared?.Dispose(); session?.Dispose();
-            if (ReferenceEquals(blockPreparationCancellation, cancellation)) blockPreparationCancellation = null;
-            preparingMultitrack = false;
-            if (Content is UIElement workspace) workspace.IsEnabled = true;
-            finished = true; progress.Close();
+            preparationError = PlaybackPreparationCleanup.Run(preparationError,
+                () => RetireUnpublishedPlayback(prepared, session),
+                () =>
+                {
+                    if (ReferenceEquals(blockPreparationCancellation, cancellation)) blockPreparationCancellation = null;
+                    preparingMultitrack = false;
+                },
+                () => { if (Content is UIElement workspace) workspace.IsEnabled = true; },
+                () => { finished = true; progress.Close(); });
+            if (preparationError is not null)
+                MessageBox.Show(this, $"Experimentelle Wiedergabe konnte nicht vorbereitet werden.\n\n{preparationError.Message}\n{preparationError.Data["PlaybackCleanupError"]}\n\nDie bisherige Engine kann unter Optionen gewählt werden.",
+                    "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+    }
+
+    private void RetireUnpublishedPlayback(PreparedMultitrackPlayback? prepared, PreparedMultitrackSession? session)
+    {
+        if (prepared is not null)
+        {
+            prepared.Dispose();
+            retiringBlock = prepared;
+            blockStopPending = prepared.StopAsync(TimeSpan.FromSeconds(2));
+            _ = ObservePlaybackCleanupAsync(blockStopPending);
+        }
+        if (session is not null)
+        {
+            unpublishedPreparationCleanup = Task.Run(async () =>
+            {
+                session.Dispose();
+                await session.Completion.ConfigureAwait(false);
+            });
+            _ = ObservePlaybackCleanupAsync(unpublishedPreparationCleanup);
+        }
+    }
+    private async Task ObservePlaybackCleanupAsync(Task completion)
+    {
+        try { await completion; }
+        catch (OperationCanceledException) { }
+        catch (Exception error) { HintText.Content = $"Fehler bei der Audiofreigabe: {error.GetBaseException().Message}"; }
     }
 
     private async void UpdateMultitrackPlaybackRange()
@@ -531,7 +577,9 @@ public partial class MainWindow : Window
         if (blockPlayback is { } active)
         {
             var selected = Sequencer.GetPlaybackRange();
-            try { await active.ConfigurePlaybackAsync(selected?.Start ?? 0, selected?.Count ?? active.FrameCount, loopPlaybackEnabled); }
+            var selectedStart = selected?.Start ?? 0;
+            var selectedCount = Math.Min(selected?.Count ?? active.FrameCount, active.FrameCount - selectedStart);
+            try { await active.ConfigurePlaybackAsync(selectedStart, selectedCount, selected.HasValue || loopPlaybackEnabled); }
             catch (Exception exception) { BlockPlaybackFailed(active, exception); }
             return;
         }
@@ -539,7 +587,7 @@ public partial class MainWindow : Window
         var range = Sequencer.GetPlaybackRange();
         var start = range?.Start ?? 0;
         var count = range?.Count ?? mixer.FrameCount;
-        mixer.ConfigurePlayback(start, count, loopPlaybackEnabled);
+        mixer.ConfigurePlayback(start, count, range.HasValue || loopPlaybackEnabled);
     }
 
     private void RefreshMultitrack()
@@ -999,7 +1047,10 @@ public partial class MainWindow : Window
     {
         loopPlaybackEnabled = LoopButton.IsChecked == true;
         UpdateMultitrackPlaybackRange();
-        HintText.Content = loopPlaybackEnabled ? "Endlosschleife aktiviert." : "Endlosschleife deaktiviert.";
+        HintText.Content = loopPlaybackEnabled ? "Endlosschleife aktiviert."
+            : MultitrackPanel.Visibility == Visibility.Visible && Sequencer.GetPlaybackRange().HasValue
+                ? "Zusätzliche Endlosschleife deaktiviert. Die markierte Auswahl wird weiter wiederholt."
+                : "Endlosschleife deaktiviert.";
     }
     private void StopPlayback()
     {
@@ -1019,10 +1070,12 @@ public partial class MainWindow : Window
         {
             retiringBlock = retiringBlockPlayback;
             blockStopPending = retiringBlockPlayback.StopAsync(TimeSpan.FromSeconds(2));
+            _ = ObservePlaybackCleanupAsync(blockStopPending);
         }
         blockPlayback = null;
         Sequencer.PositionSeconds = 0;
         if (!recorder.IsRecording) ResetLevel();
+        HintText.Content = "Wiedergabe gestoppt.";
     }
 
     private async void Record_Click(object sender, RoutedEventArgs e)

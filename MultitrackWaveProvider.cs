@@ -88,7 +88,7 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
     private long position;
     private long rangeStart;
     private long rangeEnd;
-    private sealed record PlaybackWindow(long Start, long End, bool Loop);
+    private sealed record PlaybackWindow(long Start, long End, bool Loop, long? Seek = null);
     private PlaybackWindow? pendingWindow;
     private PlaybackWindow? activeWindow;
     private long totalFramesRead;
@@ -97,6 +97,13 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         if (startFrame < 0) throw new ArgumentOutOfRangeException(nameof(startFrame));
         if (frameCount <= 0) throw new ArgumentOutOfRangeException(nameof(frameCount));
         Volatile.Write(ref pendingWindow, new PlaybackWindow(startFrame, checked(startFrame + frameCount), loop));
+    }
+    public void Seek(long frame)
+    {
+        var window = Volatile.Read(ref pendingWindow)!;
+        var target = frame >= window.Start && frame < window.End ? frame
+            : window.Loop ? window.Start : Math.Clamp(frame, window.Start, window.End - 1);
+        Volatile.Write(ref pendingWindow, window with { Seek = target });
     }
     public long AudibleFrame(int latencyFrames)
     {
@@ -274,7 +281,8 @@ internal sealed class MultitrackWaveProvider : IRewindableWaveProvider
         var window = Volatile.Read(ref pendingWindow)!;
         if (!ReferenceEquals(window, activeWindow))
         {
-            if (position < window.Start || position >= window.End) position = window.Start;
+            if (window.Seek is { } seek) position = seek;
+            else if (position < window.Start || position >= window.End) position = window.Start;
             Volatile.Write(ref activeWindow, window);
         }
         var written = 0;

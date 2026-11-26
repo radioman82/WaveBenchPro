@@ -92,10 +92,65 @@ public sealed class PreparedMultitrackPlaybackTests
         var session = new PreparedMultitrackSession(project.Snapshot(), project.Tracks);
         using var renderer = session.OpenRenderer(0, 100, false, 16);
         session.Dispose();
+        Assert.False(session.Completion.IsCompleted);
         var block = new float[32];
         Assert.Equal(16, renderer.Read(block, 16));
         Assert.Equal(.2f, block[0]);
         Assert.Throws<ObjectDisposedException>(() => session.OpenRenderer(0, 100, false, 16));
+    }
+
+    [Fact]
+    public async Task StopAlsoWaitsForAnExternalSessionReader()
+    {
+        using var audio = AudioDocument.FromSamples(new float[100], 1, 48000);
+        var project = new MultitrackProject(); project.Add(audio);
+        using var session = new PreparedMultitrackSession(project.Snapshot(), project.Tracks);
+        var external = session.OpenRenderer(0, 100, false, 16);
+        using var playback = new PreparedMultitrackPlayback(session, 16, 2);
+        await playback.ConfigurePlaybackAsync(0, 100, true);
+        Assert.False(await playback.StopAsync(TimeSpan.FromMilliseconds(50)));
+        Assert.False(session.Completion.IsCompleted);
+        external.Dispose();
+        Assert.True(await playback.StopAsync(TimeSpan.FromSeconds(2)));
+        Assert.True(session.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
+    public async Task SeekPreservesLoopBoundsAndInvalidRangesDoNotStopCurrentPlayback()
+    {
+        using var audio = AudioDocument.FromSamples(Enumerable.Range(0, 1000).Select(i => i / 1000f).ToArray(), 1, 48000);
+        var project = new MultitrackProject(); project.Add(audio);
+        using var session = new PreparedMultitrackSession(project.Snapshot(), project.Tracks);
+        using var playback = new PreparedMultitrackPlayback(session, 256, 4);
+        await playback.ConfigurePlaybackAsync(100, 100, true);
+        await playback.SeekAsync(150);
+        var bytes = new byte[70 * 8];
+        Assert.Equal(bytes.Length, playback.Read(bytes));
+        var values = MemoryMarshal.Cast<byte, float>(bytes).ToArray();
+        Assert.Equal(.15f, values[0]);
+        Assert.Equal(.1f, values[100]); // Frame 200 wraps to selection start.
+        await playback.SeekAsync(900);
+        Assert.Equal(bytes.Length, playback.Read(bytes));
+        Assert.Equal(.1f, MemoryMarshal.Cast<byte, float>(bytes)[0]);
+        foreach (var (start, count) in new[] { (-1L, 1L), (1000L, 1L), (999L, 2L), (100L, long.MaxValue), (0L, 0L) })
+            await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => playback.ConfigurePlaybackAsync(start, count, true));
+        Assert.Equal(bytes.Length, playback.Read(bytes)); // Invalid requests leave the current generation intact.
+        Assert.True(await playback.StopAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Theory]
+    [InlineData(999, 1, false)]
+    [InlineData(999, 1, true)]
+    public void LastFrameAndExactEndAreValid(long start, long count, bool loop)
+    {
+        using var audio = AudioDocument.FromSamples(new float[1000], 1, 48000);
+        var project = new MultitrackProject(); project.Add(audio);
+        using var session = new PreparedMultitrackSession(project.Snapshot(), project.Tracks);
+        using var renderer = session.OpenRenderer(start, count, loop, 16);
+        Assert.Equal(1, renderer.Read(new float[32], 16));
+        Assert.Equal(loop ? 1 : 0, renderer.Read(new float[32], 16));
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.OpenRenderer(999, 2, false, 16));
+        Assert.Throws<ArgumentOutOfRangeException>(() => session.OpenRenderer(0, long.MaxValue, false, 16));
     }
 
     [Fact]
