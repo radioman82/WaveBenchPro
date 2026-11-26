@@ -3,3 +3,5 @@
 *.png binary
 *.ico binary
 *.zip binary
+# Keep upstream license texts verbatim, including their original whitespace.
+licenses/** whitespace=-trailing-space,-blank-at-eof
