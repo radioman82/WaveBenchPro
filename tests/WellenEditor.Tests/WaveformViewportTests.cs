@@ -29,6 +29,12 @@ public sealed class WaveformViewportTests
                 view.UpdateDocument(document);
                 Assert.Equal(2000, document.FrameCount);
                 Assert.True(document.CanRedo);
+                document.EnsureMaterialized();
+                Assert.True(document.CanRedo);
+                document.Redo();
+                Assert.Equal(1500, document.FrameCount);
+                document.Undo();
+                Assert.Equal(2000, document.FrameCount);
             });
         }
         finally { File.Delete(path); }

@@ -187,24 +187,51 @@ public sealed class AudioDocument : IDisposable
         if (sampleCount > Array.MaxLength)
             throw new NotSupportedException("Diese Datei ist für die bisherige destruktive Bearbeitung zu groß. Wiedergabe bleibt per Disk-Streaming möglich.");
 
-        var loaded = new float[(int)sampleCount];
-        using var source = CreateSegmentedSource();
-        const int blockFrames = 4096;
-        for (var frame = 0; frame < streamingFrameCount; frame += blockFrames)
+        var loaded = ReadStreamingSegments(streamingSegments!);
+        var convertedUndo = new Stack<AudioSnapshot>();
+        var convertedRedo = new Stack<AudioSnapshot>();
+        try
         {
-            var count = Math.Min(blockFrames, streamingFrameCount - frame);
-            var read = source.ReadFrames(frame, loaded, frame, count);
-            if (read != count) throw new EndOfStreamException("Die WAV-Datei konnte nicht vollständig für die Bearbeitung gelesen werden.");
+            foreach (var segments in streamingUndoHistory.Reverse())
+                convertedUndo.Push(CreateSnapshot(ReadStreamingSegments(segments)));
+            foreach (var segments in streamingRedoHistory.Reverse())
+                convertedRedo.Push(CreateSnapshot(ReadStreamingSegments(segments)));
+        }
+        catch
+        {
+            ClearSnapshots(convertedUndo);
+            ClearSnapshots(convertedRedo);
+            throw;
         }
 
         samples = loaded;
         waveformSamples = loaded;
+        foreach (var snapshot in convertedUndo.Reverse()) undoHistory.Push(snapshot);
+        foreach (var snapshot in convertedRedo.Reverse()) redoHistory.Push(snapshot);
         streamingWavPath = null;
         streamingFrameCount = 0;
         streamingSegments = null;
         streamingUndoHistory.Clear();
         streamingRedoHistory.Clear();
         InvalidatePeakCache();
+    }
+
+    private float[] ReadStreamingSegments(List<AudioSourceSegment> segments)
+    {
+        var frameCount = checked((int)segments.Sum(segment => segment.FrameCount));
+        var sampleCount = checked((long)frameCount * Channels);
+        if (sampleCount > Array.MaxLength)
+            throw new NotSupportedException("Ein Undo-Schritt ist für die destruktive Bearbeitung zu groß.");
+        var loaded = new float[(int)sampleCount];
+        using var source = new SegmentedAudioSource(new WavFileAudioSource(streamingWavPath!), segments.ToArray());
+        const int blockFrames = 4096;
+        for (var frame = 0; frame < frameCount; frame += blockFrames)
+        {
+            var count = Math.Min(blockFrames, frameCount - frame);
+            if (source.ReadFrames(frame, loaded, frame, count) != count)
+                throw new EndOfStreamException("Die WAV-Datei konnte nicht vollständig für die Bearbeitung gelesen werden.");
+        }
+        return loaded;
     }
 
     private static float[] BuildWaveformPreview(IAudioSource source)
