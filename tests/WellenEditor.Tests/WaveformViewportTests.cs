@@ -1,9 +1,38 @@
 using Xunit;
+using NAudio.Wave;
+using System.IO;
 
 namespace WellenEditor.Tests;
 
 public sealed class WaveformViewportTests
 {
+    [Fact]
+    public void RefreshingAStreamingEditPreservesUndoAndTimeline()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench-undo-{Guid.NewGuid():N}.wav");
+        try
+        {
+            using (var writer = new WaveFileWriter(path, new WaveFormat(44100, 16, 1)))
+                writer.Write(new byte[4000], 0, 4000);
+            using var document = AudioDocument.Load(path);
+            using var control = new AudioControlThread();
+            control.Invoke(() =>
+            {
+                var view = new WaveformView();
+                view.SetStreamingPreview(document.WaveformSamples, document.Channels, document.SampleRate, document.FrameCount);
+                document.Delete(new Selection(200, 700));
+                view.UpdateDocument(document);
+                Assert.True(document.IsStreaming);
+                Assert.True(document.CanUndo);
+                Assert.Equal(1500, view.Viewport.Count);
+                document.Undo();
+                view.UpdateDocument(document);
+                Assert.Equal(2000, document.FrameCount);
+                Assert.True(document.CanRedo);
+            });
+        }
+        finally { File.Delete(path); }
+    }
     [Fact]
     public void ShorterAudioAfterRecordingUndoRetainsAVisibleWindow()
     {

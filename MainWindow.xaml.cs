@@ -1654,7 +1654,7 @@ public partial class MainWindow : Window
     private void RefreshAfterEdit(int? cursor = null)
     {
         if (document is null) return;
-        Waveform.UpdateAudio(document.Samples, document.Channels, document.SampleRate); if (cursor.HasValue) Waveform.SetCursor(cursor.Value);
+        Waveform.UpdateDocument(document); if (cursor.HasValue) Waveform.SetCursor(cursor.Value);
         DurationText.Text = $"Länge: {FormatTime(document.Duration)}"; ViewRangeText.Text = $"0:00.000 – {FormatTime(document.Duration)}"; UpdateSelectionText();
         UpdateUndoRedoState();
         RefreshDocumentTabs();

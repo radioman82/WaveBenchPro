@@ -49,11 +49,22 @@ public sealed class WaveformView : FrameworkElement
 
     /// <summary>Wechselt die Audiodaten, behält aber Zoom, Viewport und Auswahl bei.</summary>
     public void UpdateAudio(float[] audioSamples, int audioChannels, int audioSampleRate)
+        => UpdateAudioCore(audioSamples, audioChannels, audioSampleRate, audioSamples.Length / audioChannels);
+
+    internal void UpdateDocument(AudioDocument document)
+    {
+        if (document.IsStreaming)
+            UpdateAudioCore(document.WaveformSamples, document.Channels, document.SampleRate, document.FrameCount);
+        else
+            UpdateAudio(document.Samples, document.Channels, document.SampleRate);
+    }
+
+    private void UpdateAudioCore(float[] audioSamples, int audioChannels, int audioSampleRate, int totalFrames)
     {
         samples = audioSamples;
         channels = audioChannels;
         sampleRate = audioSampleRate;
-        timelineFrameCount = samples.Length / channels;
+        timelineFrameCount = totalFrames;
         peakCache = null;
         // Undoing an appended recording can put the old viewport beyond the new EOF.
         // Preserve its width where possible, then move it into the remaining document.
