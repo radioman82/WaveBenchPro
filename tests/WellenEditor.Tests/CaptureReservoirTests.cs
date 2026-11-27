@@ -1,11 +1,28 @@
 using System.IO;
 using NAudio.Wave;
+using NAudio.Wave.Asio;
 using Xunit;
 
 namespace WellenEditor.Tests;
 
 public sealed class CaptureReservoirTests
 {
+    [Fact]
+    public void FailedNativeBufferDisposalIsRecordedAndNeverCalledTwice()
+    {
+        var lifetime = new AsioBufferRetirement();
+        var calls = 0;
+        AsioError Release()
+        {
+            calls++;
+            return AsioError.ASE_NotPresent;
+        }
+        var first = Assert.Throws<IOException>(() => lifetime.DisposeBuffers(Release));
+        var retry = Assert.Throws<InvalidOperationException>(() => lifetime.DisposeBuffers(Release));
+        Assert.Same(first, retry.InnerException);
+        Assert.Equal(1, calls);
+    }
+
     [Theory]
     [InlineData(44100, 256, 2, 112, 2048)]
     [InlineData(48000, 256, 2, 122, 2048)]

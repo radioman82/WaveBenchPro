@@ -183,13 +183,12 @@ public partial class MainWindow : Window
                     return;
                 }
                 finally { recordingStopPending = false; }
-                recorder.Dispose();
+                if (!DisposeRecorderForClose()) return;
                 closeAfterRecording = true;
                 Close();
                 return;
             }
-            recorder.Dispose();
-            if (hardwareLifetime.HasPending) e.Cancel = true;
+            if (!DisposeRecorderForClose() || hardwareLifetime.HasPending) e.Cancel = true;
         };
         playbackTimer.Tick += PlaybackTimer_Tick;
         Loaded += (_, _) =>
@@ -206,6 +205,26 @@ public partial class MainWindow : Window
                 HintText.Content = $"{cached.Count} gespeicherte VST3-Effekte geladen. Doppelklick wendet ein Plugin an.";
             }
         };
+    }
+
+    private bool DisposeRecorderForClose()
+    {
+        try
+        {
+            recorder.Dispose();
+            return true;
+        }
+        catch (Exception error)
+        {
+            // A confirmed stop permits normal application exit with the native driver
+            // still owned by the process. An unconfirmed stop must keep the window live.
+            var canClose = recorder.CanCloseWithRetainedCapture && !recorder.IsFinalizationPending;
+            var message = canClose
+                ? "Der Treiber ist gestoppt. Seine Ressourcen bleiben bis zum Programmende gebunden."
+                : "Die Aufnahme ist noch nicht sicher beendet. Bitte das Programm geöffnet lassen.";
+            MessageBox.Show(this, $"{message}\n\n{error.Message}", "Aufnahme", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return canClose;
+        }
     }
 
     private void SequencerHorizontalIn_Click(object sender, RoutedEventArgs e) => Sequencer.ZoomHorizontal(1.25);

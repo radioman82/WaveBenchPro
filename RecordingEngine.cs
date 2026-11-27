@@ -110,6 +110,7 @@ public sealed class RecordingEngine : IDisposable
     }
     internal Task? PendingFinalization { get { lock (writerGate) return deferredWriterCleanup; } }
     public bool IsFinalizationPending { get { lock (writerGate) return deferredWriterCleanup is { IsCompleted: false }; } }
+    internal bool CanCloseWithRetainedCapture => capture is AsioRecordingCapture { StoppedWithRetainedBuffers: true };
 
     public RecordingEngine()
         : this(CreateCapture, Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "WaveBenchPro", "Recovered"), length => new float[length], TimeSpan.FromSeconds(3), (path, waveFormat) => new WaveFileRecordingSink(path, waveFormat)) { }

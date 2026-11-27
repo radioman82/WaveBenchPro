@@ -9,8 +9,8 @@ internal static class AsioHandleMeasurements
 {
     internal static int Run(string stage, int cycles)
     {
-        if (stage is not ("open" or "buffer" or "start" or "adapter") || cycles is < 1 or > 1000)
-            throw new ArgumentException("asio-handles open|buffer|start|adapter 1..1000");
+        if (stage is not ("open" or "buffer" or "start" or "adapter" or "callback") || cycles is < 1 or > 1000)
+            throw new ArgumentException("asio-handles open|buffer|start|adapter|callback 1..1000");
         var configuration = new AudioDeviceConfiguration { Backend = AudioBackendKind.Asio,
             DeviceId = "BEHRINGER USB AUDIO", SampleRate = 48000, AsioBufferFrames = 256 };
         var signal = new SilentProvider();
@@ -18,6 +18,13 @@ internal static class AsioHandleMeasurements
         var watch = Stopwatch.StartNew();
         void Cycle()
         {
+            if (stage == "callback")
+            {
+                using var thread = CreateThread(IntPtr.Zero, 0, NativeThreadEntry, IntPtr.Zero, 0, out _);
+                if (thread.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (WaitForSingleObject(thread, 5000) != 0) throw new TimeoutException("The test thread did not end.");
+                return;
+            }
             if (stage == "adapter")
             {
                 using var playback = AudioHardwareBackend.Default.CreatePlayback(configuration);
@@ -78,10 +85,22 @@ internal static class AsioHandleMeasurements
             GC.Collect(); GC.WaitForPendingFinalizers(); GC.Collect();
             Thread.Sleep(300);
             process.Refresh();
+            var types = ProcessHandleTypes.Read(process.Handle, out var signaledThreads);
             Console.WriteLine(JsonSerializer.Serialize(new { stage, cycle, elapsed_s = watch.Elapsed.TotalSeconds,
-                handles = process.HandleCount, threads = process.Threads.Count, types = ProcessHandleTypes.Read(process.Handle) }));
+                handles = process.HandleCount, threads = process.Threads.Count, types, signaled_thread_handles = signaledThreads }));
         }
     }
+
+    [UnmanagedFunctionPointer(CallingConvention.Winapi)]
+    private delegate uint ThreadEntry(IntPtr argument);
+    private static readonly ThreadEntry NativeThreadEntry = _ => 0;
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern Microsoft.Win32.SafeHandles.SafeWaitHandle CreateThread(IntPtr attributes,
+        nuint stackSize, ThreadEntry entry, IntPtr argument, uint flags, out uint id);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(Microsoft.Win32.SafeHandles.SafeWaitHandle handle, uint milliseconds);
 
     private static void Check(AsioError value, string operation)
     {
@@ -107,8 +126,12 @@ internal static class ProcessHandleTypes
     [DllImport("ntdll.dll")]
     private static extern int NtQueryObject(IntPtr handle, int infoClass, IntPtr buffer, int size, out int required);
 
-    internal static Dictionary<string, int> Read(IntPtr process)
+    [DllImport("kernel32.dll")]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    internal static Dictionary<string, int> Read(IntPtr process, out int signaledThreads)
     {
+        signaledThreads = 0;
         const int processHandleInformation = 51;
         const int objectTypeInformation = 2;
         var capacity = 64 * 1024;
@@ -141,6 +164,8 @@ internal static class ProcessHandleTypes
                         }
                         name ??= $"Type {index}";
                         counts[name] = counts.GetValueOrDefault(name) + 1;
+                        if (name == "Thread" && WaitForSingleObject(Marshal.ReadIntPtr(entry), 0) == 0)
+                            signaledThreads++;
                     }
                     return counts;
                 }

@@ -70,11 +70,13 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
     private readonly AsioSampleType nativeFormat;
     private readonly int frames;
     public int PacketFrames => frames;
+    internal bool StoppedWithRetainedBuffers => bufferRetirement.HasFailed && Volatile.Read(ref running) == 0;
     private readonly string name;
     private readonly Timer notifications;
     private int discontinuity;
     private int running, stopping, activeCallbacks, driverFault;
     private bool nativeDisposed;
+    private readonly AsioBufferRetirement bufferRetirement = new();
     private long callbacks, allocatedBytes, betweenCallbackAllocatedBytes, lastExitAllocated;
     private long previousPacketTick, maximumPacketGapTicks;
     private long latestPacketTick;
@@ -215,13 +217,40 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
             control.Invoke(() =>
             {
                 device.FillBufferCallback = null;
-                if (device.Driver.DisposeBuffers() is var result && result != AsioError.ASE_OK && result != AsioError.ASE_SUCCESS)
-                    throw new IOException($"ASIO-Pufferfreigabe fehlgeschlagen: {result}.");
+                bufferRetirement.DisposeBuffers(device.Driver.DisposeBuffers);
                 device.Driver.ReleaseComAsioDriver();
             });
             nativeDisposed = true;
         }
         control.Dispose();
+    }
+}
+
+internal sealed class AsioBufferRetirement
+{
+    private Exception? failure;
+    private bool disposed;
+    internal bool HasFailed => failure is not null;
+
+    internal void DisposeBuffers(Func<AsioError> release)
+    {
+        if (disposed) return;
+        if (failure is not null)
+            throw new InvalidOperationException("Die ASIO-Pufferfreigabe ist fehlgeschlagen. Dieser Treiberzustand erfordert einen Programmneustart.", failure);
+        try
+        {
+            var result = release();
+            if (result is not (AsioError.ASE_OK or AsioError.ASE_SUCCESS))
+                throw new IOException($"ASIO-Pufferfreigabe fehlgeschlagen: {result}.");
+            disposed = true;
+        }
+        catch (Exception error)
+        {
+            // NAudio 3.3 frees the callback table even if the native call fails.
+            // Repeating the call could free that table twice.
+            failure = error;
+            throw;
+        }
     }
 }
 
