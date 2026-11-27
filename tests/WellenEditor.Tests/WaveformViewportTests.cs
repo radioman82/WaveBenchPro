@@ -6,6 +6,36 @@ namespace WellenEditor.Tests;
 
 public sealed class WaveformViewportTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SavingStreamingEditsPreservesUndo(bool overwriteSource)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench-save-{Guid.NewGuid():N}.wav");
+        var destination = overwriteSource ? path : path + ".copy.wav";
+        try
+        {
+            using (var writer = new WaveFileWriter(path, new WaveFormat(44100, 16, 1)))
+                writer.Write(new byte[4000], 0, 4000);
+            using var document = AudioDocument.Load(path);
+            document.Delete(new Selection(200, 700));
+            document.SaveAsWave(destination, 16);
+            document.UpdateSourcePath(destination);
+            Assert.True(document.IsStreaming);
+            Assert.True(document.CanUndo);
+            document.Undo();
+            Assert.Equal(2000, document.FrameCount);
+            Assert.True(document.CanRedo);
+            document.Redo();
+            Assert.Equal(1500, document.FrameCount);
+        }
+        finally
+        {
+            File.Delete(path);
+            if (!overwriteSource) File.Delete(destination);
+        }
+    }
+
     [Fact]
     public void RefreshingAStreamingEditPreservesUndoAndTimeline()
     {

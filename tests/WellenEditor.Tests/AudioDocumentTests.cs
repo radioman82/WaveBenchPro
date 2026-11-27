@@ -87,6 +87,7 @@ public sealed class AudioDocumentTests
         try
         {
             using var document = AudioDocument.Load(path);
+            var original = CaptureStreamingPlayback(document, 0, 100);
             document.Delete(new Selection(30, 60));
             var expected = CaptureStreamingPlayback(document, 0, 70);
 
@@ -95,7 +96,10 @@ public sealed class AudioDocumentTests
             document.IsStreaming.Should().BeTrue();
             document.FrameCount.Should().Be(70);
             CaptureStreamingPlayback(document, 0, 70).Should().Equal(expected);
-            document.CanUndo.Should().BeFalse("the old history points at the replaced source file");
+            document.CanUndo.Should().BeTrue();
+            document.Undo();
+            document.FrameCount.Should().Be(100);
+            document.Samples.Should().Equal(original);
         }
         finally { if (File.Exists(path)) File.Delete(path); }
     }

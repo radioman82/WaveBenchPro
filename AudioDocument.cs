@@ -89,8 +89,8 @@ public sealed class AudioDocument : IDisposable
     public bool OriginalWaveIsIeeeFloat { get; private set; }
     public int FrameCount => IsStreaming ? streamingFrameCount : samples.Length / Channels;
     public TimeSpan Duration => TimeSpan.FromSeconds(FrameCount / (double)SampleRate);
-    public bool CanUndo => IsStreaming ? streamingUndoHistory.Count > 0 : undoHistory.Count > 0;
-    public bool CanRedo => IsStreaming ? streamingRedoHistory.Count > 0 : redoHistory.Count > 0;
+    public bool CanUndo => streamingUndoHistory.Count > 0 || undoHistory.Count > 0;
+    public bool CanRedo => streamingRedoHistory.Count > 0 || redoHistory.Count > 0;
 
     public static AudioDocument FromSamples(float[] samples, int channels, int sampleRate, string? sourcePath = null)
     {
@@ -188,6 +188,17 @@ public sealed class AudioDocument : IDisposable
             throw new NotSupportedException("Diese Datei ist für die bisherige destruktive Bearbeitung zu groß. Wiedergabe bleibt per Disk-Streaming möglich.");
 
         var loaded = ReadStreamingSegments(streamingSegments!);
+        ConvertStreamingHistoryToSnapshots();
+        samples = loaded;
+        waveformSamples = loaded;
+        streamingWavPath = null;
+        streamingFrameCount = 0;
+        streamingSegments = null;
+        InvalidatePeakCache();
+    }
+
+    private void ConvertStreamingHistoryToSnapshots()
+    {
         var convertedUndo = new Stack<AudioSnapshot>();
         var convertedRedo = new Stack<AudioSnapshot>();
         try
@@ -204,16 +215,10 @@ public sealed class AudioDocument : IDisposable
             throw;
         }
 
-        samples = loaded;
-        waveformSamples = loaded;
         foreach (var snapshot in convertedUndo.Reverse()) undoHistory.Push(snapshot);
         foreach (var snapshot in convertedRedo.Reverse()) redoHistory.Push(snapshot);
-        streamingWavPath = null;
-        streamingFrameCount = 0;
-        streamingSegments = null;
         streamingUndoHistory.Clear();
         streamingRedoHistory.Clear();
-        InvalidatePeakCache();
     }
 
     private float[] ReadStreamingSegments(List<AudioSourceSegment> segments)
@@ -356,6 +361,7 @@ public sealed class AudioDocument : IDisposable
     {
         streamingUndoHistory.Push(streamingSegments!.ToList());
         streamingRedoHistory.Clear();
+        ClearSnapshots(redoHistory);
     }
 
     private void ApplyStreamingEdit(List<AudioSourceSegment> segments)
@@ -480,7 +486,11 @@ public sealed class AudioDocument : IDisposable
     {
         if (IsStreaming)
         {
-            if (!streamingUndoHistory.TryPop(out var streamedRestored)) return;
+            if (!streamingUndoHistory.TryPop(out var streamedRestored))
+            {
+                if (undoHistory.Count > 0) { EnsureMaterialized(); Undo(); }
+                return;
+            }
             streamingRedoHistory.Push(streamingSegments!.ToList());
             streamingSegments = streamedRestored;
             streamingFrameCount = checked((int)streamedRestored.Sum(segment => segment.FrameCount));
@@ -509,7 +519,11 @@ public sealed class AudioDocument : IDisposable
     {
         if (IsStreaming)
         {
-            if (!streamingRedoHistory.TryPop(out var streamedRestored)) return;
+            if (!streamingRedoHistory.TryPop(out var streamedRestored))
+            {
+                if (redoHistory.Count > 0) { EnsureMaterialized(); Redo(); }
+                return;
+            }
             streamingUndoHistory.Push(streamingSegments!.ToList());
             streamingSegments = streamedRestored;
             streamingFrameCount = checked((int)streamedRestored.Sum(segment => segment.FrameCount));
@@ -620,6 +634,8 @@ public sealed class AudioDocument : IDisposable
 
     private void SaveWave(string path, int bitsPerSample, bool isIeeeFloat)
     {
+        if (IsStreaming && string.Equals(Path.GetFullPath(path), Path.GetFullPath(streamingWavPath!), StringComparison.OrdinalIgnoreCase))
+            ConvertStreamingHistoryToSnapshots();
         if (IsStreaming)
         {
             SaveStreamingWave(path, 0, FrameCount, bitsPerSample, isIeeeFloat);
@@ -921,6 +937,7 @@ public sealed class AudioDocument : IDisposable
     {
         if (IsStreaming && Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase))
         {
+            ConvertStreamingHistoryToSnapshots();
             // Nach „Speichern unter“ ist die WAV bereits als aktueller Schnittstand
             // gerendert. Die Segmentliste kann deshalb wieder auf diese neue Datei
             // zeigen, statt weiter von der alten Quelldatei abzuhängen.
@@ -928,8 +945,6 @@ public sealed class AudioDocument : IDisposable
             streamingSegments = streamingFrameCount == 0
                 ? []
                 : [new AudioSourceSegment(0, streamingFrameCount)];
-            streamingUndoHistory.Clear();
-            streamingRedoHistory.Clear();
             RefreshStreamingVisuals();
         }
         SourcePath = path;
