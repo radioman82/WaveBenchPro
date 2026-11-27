@@ -6,6 +6,10 @@ using NAudio.Wave;
 using WellenEditor;
 
 if (args.Length == 2 && args[0] == "hardware08") return await HardwareMeasurements08.Run(args[1]);
+if (args.Length == 3 && args[0] == "asio-handles" && int.TryParse(args[2], out var handleCycles))
+    return AsioHandleMeasurements.Run(args[1], handleCycles);
+if (args.Length == 2 && args[0] == "asio-duplex-probe" && int.TryParse(args[1], out var duplexRate))
+    return AsioDuplexProbe.Run(duplexRate);
 if (args.Length == 2 && args[0] == "vst-repeat08") return VstRepeatMeasurements08.Run(args[1]);
 
 if (args.Length == 2 && args[0] == "vst-check") return PlaybackMeasurements.CheckVst(args[1]);

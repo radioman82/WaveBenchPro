@@ -14,6 +14,7 @@ internal sealed record HardwareRequest08
     public int Seconds { get; init; } = 3;
     public int Cycles { get; init; }
     public int RingBlocks { get; init; } = 8;
+    public int? CaptureQueuePackets { get; init; }
 }
 
 internal static class HardwareMeasurements08
@@ -22,8 +23,8 @@ internal static class HardwareMeasurements08
     internal static async Task<int> Run(string requestPath)
     {
         var request = JsonSerializer.Deserialize<HardwareRequest08>(File.ReadAllText(requestPath), Json) ?? throw new InvalidDataException("Missing request");
-        if (request.Seconds is < 1 or > 300 || request.Cycles is < 0 or > 100 || request.RingBlocks is not (2 or 4 or 8 or 16))
-            throw new ArgumentException("Short hardware checks only: 1–300 seconds, 0–100 cycles, 2/4/8/16 ring blocks.");
+        if (request.Seconds is < 1 or > 3600 || request.Cycles is < 0 or > 100 || request.RingBlocks is not (2 or 4 or 8 or 16))
+            throw new ArgumentException("Expected 1–3600 seconds, 0–100 cycles and 2/4/8/16 ring blocks.");
         Console.WriteLine("request=" + JsonSerializer.Serialize(request, Json));
         try { return request.Operation == "capture" ? await Capture(request) : await Playback(request); }
         catch (Exception error)
@@ -61,11 +62,20 @@ internal static class HardwareMeasurements08
                 var process = Process.GetCurrentProcess(); var cpu = process.TotalProcessorTime;
                 var watch = Stopwatch.StartNew();
                 player.Play();
+                var nextReport = 60;
                 while (watch.Elapsed < TimeSpan.FromSeconds(request.Seconds))
                 {
                     await Task.Delay(50);
                     if (source.WorkerError is { } workerError) throw workerError;
                     if (stopped.Task.IsCompleted) throw new InvalidOperationException("Unexpected hardware stop", await stopped.Task);
+                    if (watch.Elapsed.TotalSeconds >= nextReport)
+                    {
+                        process.Refresh();
+                        Console.WriteLine(JsonSerializer.Serialize(new { result = "playback_progress", elapsed_s = watch.Elapsed.TotalSeconds,
+                            handles = process.HandleCount, cpu_s = (process.TotalProcessorTime - cpu).TotalSeconds,
+                            peak_working_set_bytes = process.PeakWorkingSet64, underruns = source.UnderrunCount, callbacks = meter.Calls }));
+                        nextReport += 60;
+                    }
                 }
                 player.Stop();
                 if (await stopped.Task.WaitAsync(TimeSpan.FromSeconds(5)) is { } error) throw error;
@@ -119,33 +129,65 @@ internal static class HardwareMeasurements08
         VerifiedSink? sink = null;
         IRecordingCapture? hardware = null;
         using var recorder = new RecordingEngine(_ => hardware = AudioHardwareBackend.Default.CreateCapture(request.Configuration), recovery,
-            count => new float[count], TimeSpan.FromSeconds(5), (path, format) => sink = new VerifiedSink(path, format));
-        var watch = Stopwatch.StartNew();
+            _ => throw new InvalidOperationException("The capture benchmark must not decode the recording."), TimeSpan.FromSeconds(30),
+            (path, format) => sink = new VerifiedSink(path, format), request.CaptureQueuePackets, measureCaptureTiming: true);
+        var fault = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        recorder.RecordingFaulted += (_, _) => fault.TrySetResult();
+        using var process = Process.GetCurrentProcess();
+        var cpu = process.TotalProcessorTime;
+        var gc = Enumerable.Range(0, 3).Select(GC.CollectionCount).ToArray();
+        var gcPause = GC.GetTotalPauseDuration();
         recorder.Start(request.Configuration.DeviceId);
+        var watch = Stopwatch.StartNew();
         Console.WriteLine("actual=" + recorder.HardwareStatus);
-        await Task.Delay(TimeSpan.FromSeconds(request.Seconds));
-        var recorded = await Task.Run(recorder.Finish);
+        var format = recorder.CaptureFormat!;
+        while (watch.Elapsed.TotalSeconds < request.Seconds && !fault.Task.IsCompleted)
+        {
+            var remaining = TimeSpan.FromSeconds(request.Seconds) - watch.Elapsed;
+            if (remaining <= TimeSpan.Zero) break;
+            var delayMs = Math.Clamp((int)Math.Ceiling(remaining.TotalMilliseconds), 1, 60000);
+            await Task.WhenAny(fault.Task, Task.Delay(delayMs));
+            Console.WriteLine(JsonSerializer.Serialize(new { result = "capture_progress", elapsed_s = watch.Elapsed.TotalSeconds,
+                received_bytes = recorder.ReceivedBytes, written_bytes = recorder.WrittenBytes, peak_queue_slots = recorder.PeakQueueSlots }));
+        }
+        var captureSeconds = watch.Elapsed.TotalSeconds;
+        Exception? failure = null;
+        bool completed = false;
+        try { completed = await Task.Run(recorder.FinishToSink); }
+        catch (Exception error) { failure = error; }
         watch.Stop();
-        var frames = recorded?.Samples.Length / recorded?.Channels;
-        Console.WriteLine(JsonSerializer.Serialize(new { result = "capture_completed", elapsed_s = watch.Elapsed.TotalSeconds,
-            frames, sample_rate = recorded?.SampleRate, channels = recorded?.Channels,
+        process.Refresh();
+        Console.WriteLine(JsonSerializer.Serialize(new { result = completed ? "capture_completed" : "capture_failed", elapsed_s = watch.Elapsed.TotalSeconds,
+            acquisition_s = captureSeconds, cpu_s = (process.TotalProcessorTime - cpu).TotalSeconds, peak_working_set_bytes = process.PeakWorkingSet64,
+            gc_counts = Enumerable.Range(0, 3).Select(i => GC.CollectionCount(i) - gc[i]).ToArray(), gc_pause_ms = (GC.GetTotalPauseDuration() - gcPause).TotalMilliseconds,
+            received_frames = recorder.ReceivedBytes / format.BlockAlign, written_frames = recorder.WrittenBytes / format.BlockAlign,
+            sample_rate = format.SampleRate, channels = format.Channels, error = failure?.ToString(),
             received_bytes = recorder.ReceivedBytes, written_bytes = recorder.WrittenBytes, sink_bytes = sink?.Bytes,
             wav_payload_exact = sink?.Exact, wav_frames = sink?.Frames, payload_sha256 = sink?.Hash,
+            header_exact = sink?.HeaderExact, packets = recorder.CapturePackets, discontinuities = recorder.Discontinuities, overflow_packets = recorder.OverflowPackets,
+            queue_layout = recorder.QueueLayout, queue_peak_slots = recorder.PeakQueueSlots,
+            queue_wait_max_ms = recorder.MaximumQueueWaitMs, sink_write_max_ms = recorder.MaximumWriteMs,
+            asio_packet_gap_max_ms = (hardware as AsioRecordingCapture)?.MaximumPacketGapMs,
+            asio_device_position_transitions = (hardware as AsioRecordingCapture)?.DevicePositionTransitions,
+            asio_device_position_deltas_outside_packet_size = (hardware as AsioRecordingCapture)?.DevicePositionDeltasOutsidePacketSize,
             asio_callbacks = (hardware as AsioRecordingCapture)?.CallbackCount,
             asio_callback_allocated_bytes_after_8_warmup = (hardware as AsioRecordingCapture)?.CallbackAllocatedBytes,
             asio_between_callback_allocated_bytes_after_8_warmup = (hardware as AsioRecordingCapture)?.BetweenCallbackAllocatedBytes }, Json));
         var allocationFree = hardware is not AsioRecordingCapture asio || (asio.CallbackAllocatedBytes == 0 && asio.BetweenCallbackAllocatedBytes == 0);
-        return recorded is not null && frames > 0 && sink is { Exact: true } && recorder.ReceivedBytes == recorder.WrittenBytes && allocationFree ? 0 : 1;
+        return completed && sink is { Exact: true, HeaderExact: true, Frames: > 0 } &&
+            recorder.ReceivedBytes == recorder.WrittenBytes && recorder.WrittenBytes == sink.Bytes && allocationFree ? 0 : 1;
     }
     private sealed class VerifiedSink : IRecordingSink
     {
         private readonly WaveFileRecordingSink output;
         private readonly IncrementalHash expected = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         private readonly string path;
+        private readonly WaveFormat format;
         public long Bytes, Frames;
         public bool Exact;
+        public bool HeaderExact;
         public string? Hash;
-        public VerifiedSink(string path, WaveFormat format) { this.path = path; output = new(path, format); }
+        public VerifiedSink(string path, WaveFormat format) { this.path = path; this.format = format; output = new(path, format); }
         public void Write(byte[] buffer, int offset, int count) { output.Write(buffer, offset, count); expected.AppendData(buffer, offset, count); Bytes += count; }
         public void Dispose()
         {
@@ -155,6 +197,9 @@ internal static class HardwareMeasurements08
             var bytes = new byte[65536]; int count;
             while ((count = reader.Read(bytes, 0, bytes.Length)) > 0) actual.AppendData(bytes, 0, count);
             Frames = reader.Length / reader.WaveFormat.BlockAlign;
+            HeaderExact = reader.WaveFormat.SampleRate == format.SampleRate && reader.WaveFormat.Channels == format.Channels
+                && reader.WaveFormat.BlockAlign == format.BlockAlign && reader.WaveFormat.BitsPerSample == format.BitsPerSample
+                && reader.Length % format.BlockAlign == 0 && reader.WaveFormat.AsStandardWaveFormat().Encoding == format.AsStandardWaveFormat().Encoding;
             var hash = actual.GetHashAndReset(); Hash = Convert.ToHexString(hash);
             Exact = expectedHash.SequenceEqual(hash) && reader.Length == Bytes;
         }
