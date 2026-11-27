@@ -2,9 +2,9 @@
 
 ## Application code
 
-No project license has been chosen by the owner. No LICENSE file granting reuse rights has been added. Public repository visibility does not itself grant a general open-source license; see [GitHub's licensing guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/licensing-a-repository).
+The owner selected the [MIT License](../LICENSE) for the project's own code. The MIT License permits commercial use and redistribution, including sale, subject to its notice requirements. Third-party components remain subject to their own licenses.
 
-The beta package is a **draft**, not approved for public redistribution. The owner must establish application/contribution terms before publishing it.
+The beta package remains a **draft**, pending the third-party and acceptance checks below. Contributor rights and any previous grants should be verified for the relevant contributions.
 
 ## Managed dependencies
 
@@ -31,7 +31,7 @@ For libraries distributed under LGPL 2.1, review the applicable route in [sectio
 
 Before making the beta public:
 
-1. Owner chooses the application license and distribution/contribution terms.
+1. Verify contributor rights and prior grants for included contributions.
 2. Confirm native DLL provenance, corresponding source/rebuild information and library replacement requirements as applicable; retain all required notices.
 3. Resolve the difference between runtime package metadata and native upstream terms.
 4. Retain the now-confirmed NAudio 3.3.0 MIT notice and exact package/source manifest.

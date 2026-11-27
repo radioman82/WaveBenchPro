@@ -47,7 +47,7 @@ foreach ($dependency in @("NAudio.Lame/2.1.0", "org.sndfile.runtime.win-x64/1.2.
         }
     }
 }
-foreach ($name in @("README.md", "README.de.md", "CHANGELOG.md", "THIRD-PARTY-NOTICES.md", "global.json", "packages.lock.json")) {
+foreach ($name in @("LICENSE", "README.md", "README.de.md", "CHANGELOG.md", "THIRD-PARTY-NOTICES.md", "global.json", "packages.lock.json")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $publish
 }
 foreach ($name in @("docs", "licenses")) {

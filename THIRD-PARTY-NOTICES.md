@@ -1,6 +1,6 @@
 # Third-party notices
 
-WaveBench Pro uses third-party software with separate licenses. The application owner has not selected a license for the project's own code.
+WaveBench Pro's own code is licensed under the MIT License in [LICENSE](LICENSE). Third-party software has separate licenses.
 
 | Component | Package / origin | Notice |
 |---|---|---|

@@ -8,7 +8,7 @@ Windows-Audioeditor mit klassischer Wellenformansicht und Mehrspur-Sequenzer. En
 
 ## Download und Start
 
-[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.2 wird als Entwurf vorbereitet**; Abnahme und Lizenzfreigabe stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen. Die unten beschriebenen Hardware-Backends sind unveröffentlichte Quellcodeänderungen und nicht in den eingefrorenen beta.2-Assets enthalten.
+[GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) enthält vorhandene Entwicklungsstände mit Hinweisen. **v0.3.0-beta.2 wird als Entwurf vorbereitet**; Abnahme und Prüfung der Drittanbieterbedingungen stehen aus. Ältere Downloads können vom aktuellen Quellcode abweichen. Die unten beschriebenen Hardware-Backends sind unveröffentlichte Quellcodeänderungen und nicht in den eingefrorenen beta.2-Assets enthalten.
 
 Das portable ZIP vollständig in einen beschreibbaren Ordner entpacken und **WaveBenchPro.exe** starten. Begleitdateien und Lizenzhinweise zusammenlassen. Die .NET-Laufzeit ist enthalten; zum Start wird kein SDK benötigt. Die Builds sind derzeit nicht signiert.
 
@@ -49,4 +49,4 @@ Build-Befehle stehen im [englischen README](README.md#build-and-test) und in der
 
 Probleme nachvollziehbar über [Issues](https://github.com/radioman82/WaveBenchPro/issues) melden; private Pfade/Audiodateien weglassen. Es gibt keine zugesagte Reaktionszeit.
 
-**Der Eigentümer hat noch keine Projektlizenz gewählt.** Öffentlicher Quellcode bedeutet keine allgemeine Wiederverwendungserlaubnis. [Lizenzstatus](docs/LicenseStatus.md) und [Drittanbieterhinweise](THIRD-PARTY-NOTICES.md) beachten. Der Beta-Entwurf ist noch nicht zur Weitergabe freigegeben.
+Der eigene Projektcode steht unter der [MIT-Lizenz](LICENSE). Für enthaltene Drittanbieterkomponenten gelten ihre jeweiligen Lizenzbedingungen. [Lizenzstatus](docs/LicenseStatus.md) und [Drittanbieterhinweise](THIRD-PARTY-NOTICES.md) erläutern die offenen Prüfungen für das Paket. Der Beta-Entwurf ist noch nicht zur Weitergabe freigegeben.

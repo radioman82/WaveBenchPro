@@ -65,4 +65,4 @@ The package script uses a fresh ignored output directory. [Build details](docs/A
 
 Report reproducible problems through [Issues](https://github.com/radioman82/WaveBenchPro/issues). Include version, Windows/audio device, steps and a synthetic example where possible; omit private paths/recordings. No response time is guaranteed.
 
-**The owner has not selected a project license.** Public source availability is not a general reuse permission. See [license status](docs/LicenseStatus.md) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md). The beta draft is not approved for redistribution.
+The project's own code is available under the [MIT License](LICENSE). Third-party components have their own license terms. See [license status](docs/LicenseStatus.md) and [THIRD-PARTY-NOTICES](THIRD-PARTY-NOTICES.md) for outstanding package checks. The beta draft is not approved for redistribution.
