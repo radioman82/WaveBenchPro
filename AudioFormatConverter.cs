@@ -15,6 +15,20 @@ public static class AudioFormatConverter
         if (count < 0 || count > buffer.Length) throw new ArgumentOutOfRangeException(nameof(count));
         ArgumentNullException.ThrowIfNull(format);
 
+        var (encoding, bytesPerSample) = DecodeFormat(format);
+        var sampleCount = count / bytesPerSample;
+        var result = new float[sampleCount];
+
+        for (var index = 0; index < sampleCount; index++)
+        {
+            var position = index * bytesPerSample;
+            result[index] = DecodeSample(buffer, position, encoding, bytesPerSample);
+        }
+        return result;
+    }
+
+    internal static (WaveFormatEncoding Encoding, int BytesPerSample) DecodeFormat(WaveFormat format)
+    {
         // WaveFileReader materializes persisted extensible headers as WaveFormatExtraData.
         // NAudio's converter understands both that representation and WaveFormatExtensible.
         format = format.AsStandardWaveFormat();
@@ -30,28 +44,21 @@ public static class AudioFormatConverter
                 _ => throw new NotSupportedException($"WAVEFORMATEXTENSIBLE-SubFormat {extensible.SubFormat} wird nicht unterstützt.")
             };
         }
-
         var bytesPerSample = format.BitsPerSample / 8;
         if (bytesPerSample <= 0) throw new InvalidDataException("Ungültiges Audio-Sampleformat.");
-        var sampleCount = count / bytesPerSample;
-        var result = new float[sampleCount];
-
-        for (var index = 0; index < sampleCount; index++)
-        {
-            var position = index * bytesPerSample;
-            result[index] = (encoding, bytesPerSample) switch
-            {
-                (WaveFormatEncoding.IeeeFloat, 4) => BitConverter.ToSingle(buffer, position),
-                (WaveFormatEncoding.Pcm, 1) => (buffer[position] - 128) / 128f,
-                (WaveFormatEncoding.Pcm, 2) => BitConverter.ToInt16(buffer, position) / 32768f,
-                (WaveFormatEncoding.Pcm, 3) => ReadPcm24(buffer, position) / 8388608f,
-                (WaveFormatEncoding.Pcm, 4) => BitConverter.ToInt32(buffer, position) / 2147483648f,
-                _ => throw new NotSupportedException(
-                    $"Audioformat {encoding} mit {format.BitsPerSample} Bit wird nicht unterstützt.")
-            };
-        }
-        return result;
+        return (encoding, bytesPerSample);
     }
+
+    internal static float DecodeSample(byte[] buffer, int position, WaveFormatEncoding encoding, int bytesPerSample) =>
+        (encoding, bytesPerSample) switch
+        {
+            (WaveFormatEncoding.IeeeFloat, 4) => BitConverter.ToSingle(buffer, position),
+            (WaveFormatEncoding.Pcm, 1) => (buffer[position] - 128) / 128f,
+            (WaveFormatEncoding.Pcm, 2) => BitConverter.ToInt16(buffer, position) / 32768f,
+            (WaveFormatEncoding.Pcm, 3) => ReadPcm24(buffer, position) / 8388608f,
+            (WaveFormatEncoding.Pcm, 4) => BitConverter.ToInt32(buffer, position) / 2147483648f,
+            _ => throw new NotSupportedException($"Audioformat {encoding} mit {bytesPerSample * 8} Bit wird nicht unterstützt.")
+        };
 
     /// <summary>Lineares Resampling pro Kanal; Kanäle bleiben dabei getrennt.</summary>
     public static float[] Resample(float[] samples, int channels, int sourceRate, int targetRate)

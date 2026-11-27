@@ -25,6 +25,8 @@ The prepared multitrack ring is a separate setting: 4/8/16 × 1024 frames at 48 
 
 An affected endpoint removal, format change or change to an explicitly selected Windows-default output stops playback/capture. Errors are shown and explicit device reselection is required before restarting. A pinned input does not follow a different Windows-default input. Read and preserve any partial-recording recovery path shown after a capture error.
 
+ASIO capture reserves space for the negotiated packet size and aims for about 650 ms of writer headroom. The allocation is bounded by packet count and a 16 MiB memory budget. At 48 kHz with 256 stereo frames, 122 packets fit ahead of the packet held by the file writer. A full reservoir or a reported discontinuity stops capture and preserves the completed part of the WAV.
+
 Stop waits for resource ownership to end before replacement. If native retirement fails, the old resources remain owned and a new player is blocked; retry Stop. Without a plugin/driver isolation process, a hanging native call cannot be forcibly interrupted safely.
 
 Short hardware checks covered Behringer USB WDM Shared/Exclusive, Realtek digital Shared/Exclusive and the genuine Behringer ASIO driver. Behringer WDM rejected 96/192 kHz Exclusive PCM16 in this setup. After 100 ASIO playback restarts, process handles remained above the warm baseline despite collection; open/close-only and dispatcher-only checks stayed flat. The outstanding buffer/start/stop resource investigation prevents complete ASIO acceptance. Support depends on the particular endpoint, driver and format; this is not a guarantee for every device. No electrical/acoustic roundtrip setup or clean SDK-free Windows host has been validated.

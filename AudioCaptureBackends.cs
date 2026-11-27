@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Buffers.Binary;
+using System.Diagnostics;
 using NAudio.CoreAudioApi;
 using NAudio.Wave;
 using NAudio.Wave.Asio;
@@ -59,7 +60,7 @@ internal sealed class WasapiRecordingCapture : ISpanRecordingCapture
     }
 }
 
-internal sealed class AsioRecordingCapture : ISpanRecordingCapture
+internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacketRecordingCapture
 {
     private readonly AsioDriverExt device;
     private readonly AudioControlThread control = new();
@@ -68,16 +69,24 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
     private readonly byte[] nativeChannel;
     private readonly AsioSampleType nativeFormat;
     private readonly int frames;
+    public int PacketFrames => frames;
     private readonly string name;
     private readonly Timer notifications;
     private int discontinuity;
     private int running, stopping, activeCallbacks, driverFault;
     private bool nativeDisposed;
     private long callbacks, allocatedBytes, betweenCallbackAllocatedBytes, lastExitAllocated;
+    private long previousPacketTick, maximumPacketGapTicks;
+    private long latestPacketTick;
+    private long previousDevicePosition, devicePositionTransitions, devicePositionDeltasOutsidePacketSize;
     private int lastCallbackThread;
     internal long CallbackCount => Interlocked.Read(ref callbacks);
     internal long CallbackAllocatedBytes => Interlocked.Read(ref allocatedBytes);
     internal long BetweenCallbackAllocatedBytes => Interlocked.Read(ref betweenCallbackAllocatedBytes);
+    internal double MaximumPacketGapMs => Interlocked.Read(ref maximumPacketGapTicks) * 1000d / Stopwatch.Frequency;
+    internal long DevicePositionTransitions => Interlocked.Read(ref devicePositionTransitions);
+    internal long DevicePositionDeltasOutsidePacketSize => Interlocked.Read(ref devicePositionDeltasOutsidePacketSize);
+    private bool devicePositionAvailable;
     public AsioRecordingCapture(AudioDeviceConfiguration configuration)
     {
         this.configuration = configuration;
@@ -136,6 +145,10 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
             var allocation = GC.GetAllocatedBytesForCurrentThread();
             var thread = Environment.CurrentManagedThreadId;
             var warmed = CallbackCount >= 8;
+            var now = Stopwatch.GetTimestamp();
+            Volatile.Write(ref latestPacketTick, now);
+            if (warmed) Interlocked.Exchange(ref maximumPacketGapTicks, Math.Max(maximumPacketGapTicks, now - previousPacketTick));
+            previousPacketTick = now;
             if (warmed && thread == lastCallbackThread)
                 Interlocked.Add(ref betweenCallbackAllocatedBytes, Math.Max(0, allocation - lastExitAllocated));
             var floats = MemoryMarshal.Cast<byte, float>(interleaved);
@@ -144,7 +157,15 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
                 Marshal.Copy(inputs[channel], nativeChannel, 0, nativeChannel.Length);
                 NativeAsioCaptureConversion.Interleave(nativeChannel, floats, channel, inputs.Length, nativeFormat);
             }
-            device.TryGetSamplePosition(out var position, out _);
+            var hasPosition = device.TryGetSamplePosition(out var position, out _);
+            if (hasPosition && devicePositionAvailable)
+            {
+                Interlocked.Increment(ref devicePositionTransitions);
+                if (position - previousDevicePosition != frames)
+                    Interlocked.Increment(ref devicePositionDeltasOutsidePacketSize);
+            }
+            devicePositionAvailable = hasPosition;
+            previousDevicePosition = position;
             PacketAvailable?.Invoke(interleaved, Volatile.Read(ref discontinuity) != 0, position);
             var end = GC.GetAllocatedBytesForCurrentThread();
             if (warmed) Interlocked.Add(ref allocatedBytes, end - allocation);
@@ -156,11 +177,23 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture
     }
     private void CheckDriverFault(object? unused)
     {
-        if (Interlocked.Exchange(ref driverFault, 0) == 0) return;
-        try { StopRecordingCore(new IOException("ASIO-Aufnahmefehler/Reset. Teilaufnahme sichern und Gerät erneut auswählen.")); }
+        if (Volatile.Read(ref running) == 0 || Volatile.Read(ref stopping) != 0) return;
+        var packetTimeout = TimeSpan.FromSeconds(Math.Max(2, 4d * frames / WaveFormat.SampleRate));
+        var timedOut = Stopwatch.GetElapsedTime(Volatile.Read(ref latestPacketTick)) > packetTimeout;
+        if (Volatile.Read(ref driverFault) == 0 && !timedOut) return;
+        if (Interlocked.Exchange(ref stopping, 1) != 0) return;
+        var reason = timedOut ? "Der ASIO-Treiber liefert keine Aufnahmepakete mehr." : "ASIO-Aufnahmefehler oder Treiber-Reset.";
+        try { StopRecordingCore(new IOException(reason + " Teilaufnahme sichern und Gerät erneut auswählen.")); }
         catch (Exception error) { RecordingStopped?.Invoke(this, new StoppedEventArgs(error)); }
     }
-    public void StartRecording() => control.Invoke(() => { Volatile.Write(ref stopping, 0); Volatile.Write(ref running, 1); device.Start(); });
+    public void StartRecording() => control.Invoke(() =>
+    {
+        Volatile.Write(ref latestPacketTick, Stopwatch.GetTimestamp());
+        Volatile.Write(ref driverFault, 0);
+        Volatile.Write(ref stopping, 0);
+        Volatile.Write(ref running, 1);
+        device.Start();
+    });
     private void StopRecordingCore(Exception? error) => control.Invoke(() =>
     {
         if (Volatile.Read(ref running) == 0) return;
