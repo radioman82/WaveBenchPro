@@ -35,4 +35,16 @@
     <PackageReference Include="NAudio.SoundFile" Version="3.3.0" />
     <PackageReference Include="org.sndfile.runtime.win-x64" Version="1.2.2" />
   </ItemGroup>
+  <Target Name="PublishReplaceableWindowsCodecs" BeforeTargets="_ComputeFilesToBundle"
+          Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+    <ItemGroup>
+      <!-- The runtime searched its bundle extraction directory ahead of codec sidecars. -->
+      <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::Copy(';FLAC.dll;ogg.dll;opus.dll;vorbis.dll;vorbisenc.dll;vorbisfile.dll;sndfile.dll;mpg123.dll;out123.dll;syn123.dll;libmp3lame.dll;libmp3lame.64.dll;').Contains(';%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension);'))">
+        <ExcludeFromSingleFile>true</ExcludeFromSingleFile>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+          Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'libmp3lame.32.dll'" />
+    </ItemGroup>
+  </Target>
 </Project>

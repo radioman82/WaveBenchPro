@@ -14,7 +14,7 @@ The NAudio 3.3.0 family, including the explicitly added NAudio.Asio 3.3.0 packag
 
 ## Native codecs
 
-The runtime package contains sndfile, FLAC, Ogg, Vorbis, Opus, mpg123/out123/syn123 and libmp3lame DLLs. NAudio.Lame additionally supplies native 32/64-bit LAME DLLs. [NativeDependencies.json](NativeDependencies.json) records the exact packaged binary hashes.
+The runtime package contains sndfile, FLAC, Ogg, Vorbis, Opus, mpg123/out123/syn123 and libmp3lame DLLs. NAudio.Lame supplies native LAME binaries for both Windows architectures. The current win-x64 publishing target emits only the x64 codec DLLs beside the executable. The [native dependency inventory](NativeDependencies.json) records hashes from the restored packages.
 
 The runtime package metadata says Apache-2.0, while the upstream [libsndfile licensing page](https://libsndfile.github.io/libsndfile/#licensing) identifies LGPL terms. Package metadata does not replace each bundled library's license.
 
@@ -25,7 +25,7 @@ The runtime package metadata says Apache-2.0, while the upstream [libsndfile lic
 
 [LAME's official licensing notes](https://lame.sourceforge.io/license.txt) also distinguish its library use and historical decoder code. The precise source/build provenance and codec versions of every supplied DLL have not been established merely from a NuGet version. [NativeDependencyProvenance.json](NativeDependencyProvenance.json) adds exported runtime version checks: libsndfile 1.2.2, FLAC 1.4.3, Opus 1.4, Vorbis 1.3.7 and LAME 3.100. Other exact native versions remain unconfirmed. The runtime package records libsndfile commit `12d89d85e1a4dacb17e6ab7e4561920b318b7787`; its direct upstream COPYING lookup returned 404, and exact build recipes/corresponding source have not been recovered.
 
-For libraries distributed under LGPL 2.1, review the applicable route in [section 6](https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html#section6), including notices, permitted modification/reverse engineering for debugging modifications, corresponding source and replacement/relinking as applicable. Merely placing DLLs beside a single-file EXE does not prove compliant replacement: .NET extraction/native library resolution and dependent DLLs must be checked on the actual distributed package. That replacement test and exact corresponding-source/rebuild material remain open; no legal clearance is asserted.
+For libraries distributed under LGPL 2.1, review the applicable route in [section 6](https://spdx.org/licenses/LGPL-2.1-only.html), including notices, permitted modification/reverse engineering for debugging modifications, corresponding source and replacement or relinking as applicable. A local FLAC import with the previous package loaded the extracted sndfile.dll despite a replacement beside the executable. The current publishing target excludes codec DLLs from the single-file bundle and verifies their sidecar hashes against the restored packages. Exact source/build material and the applicable distribution route still require review.
 
 ## Publication gates
 

@@ -127,7 +127,8 @@ internal static class ProcessHandleTypes
     private static extern int NtQueryObject(IntPtr handle, int infoClass, IntPtr buffer, int size, out int required);
 
     [DllImport("kernel32.dll")]
-    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetExitCodeThread(IntPtr handle, out uint exitCode);
 
     internal static Dictionary<string, int> Read(IntPtr process, out int signaledThreads)
     {
@@ -164,7 +165,7 @@ internal static class ProcessHandleTypes
                         }
                         name ??= $"Type {index}";
                         counts[name] = counts.GetValueOrDefault(name) + 1;
-                        if (name == "Thread" && WaitForSingleObject(Marshal.ReadIntPtr(entry), 0) == 0)
+                        if (name == "Thread" && GetExitCodeThread(Marshal.ReadIntPtr(entry), out var exitCode) && exitCode != 259)
                             signaledThreads++;
                     }
                     return counts;

@@ -4,7 +4,9 @@ WaveBench Pro uses third-party software with separate licenses. The application 
 
 | Component | Package / origin | Notice |
 |---|---|---|
-| NAudio Core, MIDI, WinMM, WASAPI, ASIO, SoundFile and VST3 | NAudio 3.3.0 family | MIT notice from the exact package source commit; see licenses/NAudio-MIT.txt and docs/LicenseStatus.md |
+| NAudio Core, MIDI, WinMM, WASAPI and SoundFile | NAudio 3.3.0 family | MIT notice from the exact package source commit in licenses/NAudio-MIT.txt |
+| ASIO driver integration | NAudio.Asio 3.3.0 | MIT in licenses/NAudio-MIT.txt. Uses the machine's installed driver. |
+| VST3 hosting | NAudio.Vst3 3.3.0 | MIT in licenses/NAudio-MIT.txt. VST plugins carry their own terms. |
 | NAudio.Lame | 2.1.0, Corey Murtagh | licenses/NAudio-Lame-MIT.txt; native LAME is separate |
 | libsndfile | org.sndfile.runtime.win-x64 1.2.2 | licenses/libsndfile-COPYING.txt, LGPL texts |
 | libmp3lame | Runtime package and NAudio.Lame native DLLs | LGPL-family terms; exact build/source obligations pending review |
@@ -12,7 +14,8 @@ WaveBench Pro uses third-party software with separate licenses. The application 
 | FLAC | Runtime package | licenses/FLAC-COPYING.Xiph.txt |
 | Ogg / Vorbis | Runtime package | licenses/libogg-COPYING.txt, libvorbis-COPYING.txt |
 | Opus | Runtime package | licenses/Opus-COPYING.txt |
-| .NET / WPF runtime | Self-contained runtime packs | Supplied runtime LICENSE and THIRD-PARTY-NOTICES in licenses/ |
+| .NET / WPF runtime | Microsoft.NETCore.App.Runtime.win-x64 and Microsoft.WindowsDesktop.App.Runtime.win-x64 9.0.23 | Supplied runtime LICENSE and THIRD-PARTY-NOTICES in licenses/ |
+| System.Numerics.Tensors | 9.0.0, source revision `9d5a6a9aa463d6d10b0b0ba6d5982cc82f363dc3` | MIT. The package license and notices match the two Microsoft.NETCore.App.Runtime notice files byte for byte. |
 
 See [license status](docs/LicenseStatus.md), [native binary inventory](docs/NativeDependencies.json) and [license source URLs](licenses/SOURCES.json). Native codec terms are not superseded by an aggregate NuGet package's license label.
 

@@ -3,6 +3,12 @@ param(
     [string]$OutputDirectory
 )
 $ErrorActionPreference = "Stop"
+function Get-Sha256([string]$Path) {
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    $inputStream = [IO.File]::OpenRead($Path)
+    try { return [BitConverter]::ToString($algorithm.ComputeHash($inputStream)).Replace("-", "").ToLowerInvariant() }
+    finally { $inputStream.Dispose(); $algorithm.Dispose() }
+}
 $projectRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 [xml]$project = Get-Content -LiteralPath (Join-Path $projectRoot "WellenEditor.csproj")
 $version = @($project.Project.PropertyGroup.Version | Where-Object { $_ })[0]
@@ -19,8 +25,7 @@ New-Item -ItemType Directory -Path $publish -Force | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Restore failed." }
 & $Dotnet publish (Join-Path $projectRoot "WellenEditor.csproj") -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:ContinuousIntegrationBuild=true -o $publish
 if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
-# Preserve replaceable native codec files beside the executable. Do not rely
-# solely on single-file extraction or copy from a potentially stale bin folder.
+# Verify that the publish target emitted each codec as a sidecar from the locked packages.
 $assets = Get-Content -LiteralPath (Join-Path $projectRoot "obj\project.assets.json") -Raw | ConvertFrom-Json
 foreach ($dependency in @("NAudio.Lame/2.1.0", "org.sndfile.runtime.win-x64/1.2.2")) {
     $library = $assets.libraries.PSObject.Properties[$dependency].Value
@@ -34,7 +39,13 @@ foreach ($dependency in @("NAudio.Lame/2.1.0", "org.sndfile.runtime.win-x64/1.2.
         $_.Name -eq "libmp3lame.64.dll" -or $_.FullName -match '[\\/]runtimes[\\/]win-x64[\\/]native[\\/]'
     })
     if ($nativeFiles.Count -eq 0) { throw "Native codec files are missing: $dependency" }
-    foreach ($file in $nativeFiles) { Copy-Item -LiteralPath $file.FullName -Destination $publish }
+    foreach ($file in $nativeFiles) {
+        $sidecar = Join-Path $publish $file.Name
+        if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "Published codec sidecar is missing: $($file.Name)" }
+        if ((Get-Sha256 $sidecar) -ne (Get-Sha256 $file.FullName)) {
+            throw "Published codec does not match the locked package: $($file.Name)"
+        }
+    }
 }
 foreach ($name in @("README.md", "README.de.md", "CHANGELOG.md", "THIRD-PARTY-NOTICES.md", "global.json", "packages.lock.json")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $publish
@@ -60,10 +71,7 @@ $buildInfo | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $publish "BUIL
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = Join-Path $OutputDirectory "WaveBenchPro-$version-win-x64.zip"
 [IO.Compression.ZipFile]::CreateFromDirectory($publish, $archive, [IO.Compression.CompressionLevel]::Optimal, $false)
-$hash = [Security.Cryptography.SHA256]::Create()
-$stream = [IO.File]::OpenRead($archive)
-try { $digest = [BitConverter]::ToString($hash.ComputeHash($stream)).Replace("-", "").ToLowerInvariant() }
-finally { $stream.Dispose(); $hash.Dispose() }
+$digest = Get-Sha256 $archive
 "$digest  $([IO.Path]::GetFileName($archive))" | Set-Content -LiteralPath (Join-Path $OutputDirectory "SHA256SUMS.txt") -Encoding ASCII
 Write-Host "Package: $archive"
 Write-Host "Source commit: $commit"
