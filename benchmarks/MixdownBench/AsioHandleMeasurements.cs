@@ -9,13 +9,55 @@ internal static class AsioHandleMeasurements
 {
     internal static int Run(string stage, int cycles)
     {
-        if (stage is not ("open" or "buffer" or "start" or "adapter" or "callback") || cycles is < 1 or > 1000)
-            throw new ArgumentException("asio-handles open|buffer|start|adapter|callback 1..1000");
+        if (stage is not ("open" or "buffer" or "start" or "adapter" or "callback" or "restart") || cycles is < 1 or > 1000)
+            throw new ArgumentException("asio-handles open|buffer|start|adapter|callback|restart 1..1000");
         var configuration = new AudioDeviceConfiguration { Backend = AudioBackendKind.Asio,
             DeviceId = "BEHRINGER USB AUDIO", SampleRate = 48000, AsioBufferFrames = 256 };
         var signal = new SilentProvider();
         using var process = Process.GetCurrentProcess();
         var watch = Stopwatch.StartNew();
+        if (stage == "restart")
+        {
+            using var control = new AudioControlThread();
+            control.Invoke(() =>
+            {
+                var driver = AsioDriver.GetAsioDriverByName(configuration.DeviceId!);
+                var device = new AsioDriverExt(driver);
+                var created = false;
+                var started = false;
+                try
+                {
+                    if ((int)driver.GetSampleRate() != 48000) device.SetSampleRate(48000);
+                    device.CreateBuffers(2, 0, 256);
+                    created = true;
+                    var silence = new byte[1024];
+                    if (device.Capabilities.OutputChannelInfos.Take(2).Any(ch => ch.type != AsioSampleType.Int32LSB))
+                        throw new NotSupportedException("Unexpected native output format.");
+                    device.FillBufferCallback = (_, outputs) =>
+                    {
+                        foreach (var output in outputs) Marshal.Copy(silence, 0, output, silence.Length);
+                    };
+                    for (var index = -5; index <= cycles; index++)
+                    {
+                        if (index == 0) { Snapshot(0); continue; }
+                        started = true;
+                        device.Start();
+                        Thread.Sleep(30);
+                        Check(driver.Stop(), "stop");
+                        started = false;
+                        if (index is 100 or 500 or 1000 || index == cycles) Snapshot(index);
+                    }
+                }
+                finally
+                {
+                    if (started) Check(driver.Stop(), "stop");
+                    if (created) Check(driver.DisposeBuffers(), "dispose buffers");
+                    driver.ReleaseComAsioDriver();
+                    GC.KeepAlive(device);
+                }
+            });
+            return 0;
+        }
         void Cycle()
         {
             if (stage == "callback")
