@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace WellenEditor;
 
 /// <summary>Bounded recovery generations, deliberately separate from user project files.</summary>
