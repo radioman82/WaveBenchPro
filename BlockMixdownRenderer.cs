@@ -168,7 +168,10 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var target = Path.GetFullPath(path);
-        if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
+        var sourcePaths = project.Tracks.SelectMany(t => t.Clips).Select(c => c.Source.SourcePath)
+            .Where(p => !string.IsNullOrWhiteSpace(p)).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var targetExisted = File.Exists(target);
+        if (sourcePaths.Any(source => IsSameFile(source, target)))
             throw new IOException("Der Mixdown darf keine geöffnete Quelldatei überschreiben.");
         var anySolo = project.Tracks.Any(t => t.Solo && t.HasClip);
         var audible = project.Tracks.Where(t => t.HasClip && !t.Muted && (!anySolo || t.Solo)).ToArray();
@@ -202,9 +205,7 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
-            if (project.Tracks.SelectMany(t => t.Clips).Any(c => IsSameFile(c.Source.SourcePath, target)))
-                throw new IOException("Das Mixdown-Ziel verweist inzwischen auf eine geöffnete Quelldatei.");
-            File.Move(temp, target, overwrite: true);
+            PublishWave(temp, target, targetExisted, sourcePaths);
         }
         catch (Exception exception) { primaryError = exception; throw; }
         finally
@@ -228,6 +229,29 @@ internal sealed class BlockMixdownRenderer : ICancellableBlockAudioRenderer
                 if (primaryError is null) throw new IOException(string.Join(" ", details), new AggregateException(cleanupErrors));
                 primaryError.Data["MixdownCleanupError"] = $"{primaryError.Data["MixdownCleanupError"]} {string.Join(" ", details)}".Trim();
             }
+        }
+    }
+
+    private static void PublishWave(string temp, string target, bool targetExisted, string[] sources)
+    {
+        var protectedSources = new List<SafeFileHandle>();
+        try
+        {
+            // Omit FILE_SHARE_DELETE until the same-volume rename has finished. A late
+            // destination alias cannot replace an input while this handle protects the file.
+            foreach (var source in sources)
+            {
+                try { protectedSources.Add(File.OpenHandle(source, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)); }
+                catch (FileNotFoundException) { } // An in-memory document can outlive its original path.
+                catch (DirectoryNotFoundException) { }
+            }
+            if (sources.Any(source => IsSameFile(source, target)))
+                throw new IOException("Das Mixdown-Ziel verweist inzwischen auf eine geöffnete Quelldatei.");
+            File.Move(temp, target, overwrite: targetExisted);
+        }
+        finally
+        {
+            foreach (var handle in protectedSources) handle.Dispose();
         }
     }
 

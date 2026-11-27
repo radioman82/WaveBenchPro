@@ -98,6 +98,28 @@ public sealed class BlockMixdownTests
     }
 
     [Fact]
+    public void DestinationCreatedDuringRenderIsNotOverwritten()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"wavebench_new_target_{Guid.NewGuid():N}.wav");
+        try
+        {
+            using var sound = AudioDocument.FromSamples(new float[10000], 1, 48000);
+            var project = new MultitrackProject();
+            project.Add(sound);
+            var created = false;
+            var progress = new InlineProgress(_ =>
+            {
+                if (created) return;
+                File.WriteAllText(path, "created by another writer");
+                created = true;
+            });
+            Assert.Throws<IOException>(() => BlockMixdownRenderer.WriteWave(project, path, CancellationToken.None, progress));
+            Assert.Equal("created by another writer", File.ReadAllText(path));
+        }
+        finally { if (File.Exists(path)) File.Delete(path); }
+    }
+
+    [Fact]
     public void WritesFloatWaveWithExpectedSamplesAndReplacesOldTarget()
     {
         var path = Path.Combine(Path.GetTempPath(), $"wavebench_mix_{Guid.NewGuid():N}.wav");
