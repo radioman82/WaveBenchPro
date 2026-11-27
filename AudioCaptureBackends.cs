@@ -68,6 +68,7 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
     private readonly byte[] interleaved;
     private readonly byte[] nativeChannel;
     private readonly AsioSampleType nativeFormat;
+    private readonly AsioInputMonitor? monitor;
     private readonly int frames;
     public int PacketFrames => frames;
     internal bool StoppedWithRetainedBuffers => bufferRetirement.HasFailed && Volatile.Read(ref running) == 0;
@@ -89,11 +90,11 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
     internal long DevicePositionTransitions => Interlocked.Read(ref devicePositionTransitions);
     internal long DevicePositionDeltasOutsidePacketSize => Interlocked.Read(ref devicePositionDeltasOutsidePacketSize);
     private bool devicePositionAvailable;
-    public AsioRecordingCapture(AudioDeviceConfiguration configuration)
+    public AsioRecordingCapture(AudioDeviceConfiguration configuration, int[]? monitorChannels = null)
     {
         this.configuration = configuration;
         // NAudio 3.3.0 InitRecording allocates AsioAudioCapturedEventArgs per packet.
-        // Its public raw buffer callback avoids that wrapper without opening a duplex session.
+        // Its public raw buffer callback works for both input-only and shared-clock monitoring.
         try { device = control.Invoke(() =>
         {
             var raw = AsioDriver.GetAsioDriverByName(configuration.DeviceId!);
@@ -113,14 +114,21 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
                 var rate = configuration.SampleRate == 0 ? (int)device.Driver.GetSampleRate() : configuration.SampleRate;
                 if (!device.IsSampleRateSupported(rate)) throw new NotSupportedException($"ASIO unterstützt {rate} Hz nicht.");
                 if ((int)device.Driver.GetSampleRate() != rate) device.SetSampleRate(rate);
-                var count = configuration.AsioBufferFrames is { } requested ? device.CreateBuffers(0, channels.Length, requested) : device.CreateBuffers(0, channels.Length, false);
-                device.SetChannelMapping([], channels);
-                return (format, width, count, rate, name: device.Driver.GetDriverName());
+                var outputFormats = monitorChannels is null ? [] : capabilities.OutputChannelInfos.Select(channel => channel.type).ToArray();
+                var selectedOutputs = monitorChannels is { Length: 0 } ? Enumerable.Range(0, channels.Length).ToArray() : monitorChannels;
+                if (selectedOutputs is not null && (selectedOutputs.Length != channels.Length || selectedOutputs.Any(channel => channel >= outputFormats.Length)))
+                    throw new NotSupportedException("ASIO-Monitoring benötigt für jeden Eingang einen ausgewählten Ausgang.");
+                foreach (var outputFormat in outputFormats) NativeAsioCaptureConversion.BytesPerSample(outputFormat);
+                var count = configuration.AsioBufferFrames is { } requested ? device.CreateBuffers(outputFormats.Length, channels.Length, requested)
+                    : device.CreateBuffers(outputFormats.Length, channels.Length, false);
+                device.SetChannelMapping(Enumerable.Range(0, outputFormats.Length).ToArray(), channels);
+                return (format, width, count, rate, outputFormats, selectedOutputs, name: device.Driver.GetDriverName());
             });
             nativeFormat = setup.format; frames = setup.count; name = setup.name;
             WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(setup.rate, channels.Length);
             interleaved = new byte[checked(frames * WaveFormat.BlockAlign)];
             nativeChannel = new byte[checked(frames * setup.width)];
+            if (setup.selectedOutputs is not null) monitor = new AsioInputMonitor(frames, setup.outputFormats, setup.selectedOutputs);
             device.FillBufferCallback = OnCaptured;
             device.ResetRequestCallback = () => Volatile.Write(ref driverFault, 1);
             device.BufferSizeChangedCallback = _ => Volatile.Write(ref driverFault, 1);
@@ -141,9 +149,10 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
         Interlocked.Increment(ref activeCallbacks);
         try
         {
-            if (Volatile.Read(ref stopping) != 0 || Volatile.Read(ref driverFault) != 0) return;
+            if (Volatile.Read(ref stopping) != 0 || Volatile.Read(ref driverFault) != 0)
+            { monitor?.Write(outputs, []); return; }
             if ((int)device.Capabilities.SampleRate != WaveFormat.SampleRate)
-            { Volatile.Write(ref driverFault, 1); return; }
+            { Volatile.Write(ref driverFault, 1); monitor?.Write(outputs, []); return; }
             var allocation = GC.GetAllocatedBytesForCurrentThread();
             var thread = Environment.CurrentManagedThreadId;
             var warmed = CallbackCount >= 8;
@@ -169,6 +178,7 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
             devicePositionAvailable = hasPosition;
             previousDevicePosition = position;
             PacketAvailable?.Invoke(interleaved, Volatile.Read(ref discontinuity) != 0, position);
+            monitor?.Write(outputs, Volatile.Read(ref discontinuity) != 0 || Volatile.Read(ref stopping) != 0 ? [] : floats);
             var end = GC.GetAllocatedBytesForCurrentThread();
             if (warmed) Interlocked.Add(ref allocatedBytes, end - allocation);
             lastCallbackThread = thread; lastExitAllocated = end;
@@ -223,6 +233,52 @@ internal sealed class AsioRecordingCapture : ISpanRecordingCapture, IFixedPacket
             nativeDisposed = true;
         }
         control.Dispose();
+    }
+}
+
+internal sealed class AsioInputMonitor(int frames, AsioSampleType[] formats, int[] selectedOutputs)
+{
+    private readonly byte[] scratch = new byte[checked(frames * formats.Max(NativeAsioCaptureConversion.BytesPerSample))];
+    private readonly int[] inputChannels = Enumerable.Range(0, formats.Length).Select(output => Array.IndexOf(selectedOutputs, output)).ToArray();
+
+    internal void Write(IntPtr[] outputs, ReadOnlySpan<float> input)
+    {
+        for (var output = 0; output < outputs.Length; output++)
+        {
+            if (outputs[output] == IntPtr.Zero) throw new IOException("ASIO hat keinen gültigen Ausgabepuffer geliefert.");
+            var bytes = frames * NativeAsioCaptureConversion.BytesPerSample(formats[output]);
+            var channel = inputChannels[output];
+            if (channel < 0 || input.IsEmpty) scratch.AsSpan(0, bytes).Clear();
+            else Encode(input, scratch.AsSpan(0, bytes), channel, selectedOutputs.Length, formats[output]);
+            Marshal.Copy(scratch, 0, outputs[output], bytes);
+        }
+    }
+
+    internal static void Encode(ReadOnlySpan<float> input, Span<byte> output, int channel, int channels, AsioSampleType format)
+    {
+        var width = NativeAsioCaptureConversion.BytesPerSample(format);
+        for (var frame = 0; frame < output.Length / width; frame++)
+        {
+            var sample = input[frame * channels + channel];
+            var level = float.IsFinite(sample) ? Math.Clamp(sample, -1f, 1f) * .25f : 0f;
+            var bytes = output[(frame * width)..];
+            switch (format)
+            {
+                case AsioSampleType.Int16LSB:
+                    BinaryPrimitives.WriteInt16LittleEndian(bytes, (short)(level * 32768f));
+                    break;
+                case AsioSampleType.Int24LSB:
+                    var value = (int)(level * 8388608f);
+                    bytes[0] = (byte)value; bytes[1] = (byte)(value >> 8); bytes[2] = (byte)(value >> 16);
+                    break;
+                case AsioSampleType.Int32LSB:
+                    BinaryPrimitives.WriteInt32LittleEndian(bytes, (int)(level * 2147483648d));
+                    break;
+                case AsioSampleType.Float32LSB:
+                    BinaryPrimitives.WriteInt32LittleEndian(bytes, BitConverter.SingleToInt32Bits(level));
+                    break;
+            }
+        }
     }
 }
 

@@ -25,7 +25,9 @@
         <TextBlock Grid.Row="3" Text="ASIO: Kanäle / Frames"/><Grid Grid.Row="3" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="InputChannelsBox" ToolTip="Kanalnummern ab 1, z.B. 1,2; leer = erste zwei Eingänge"/><TextBox x:Name="InputFramesBox" Grid.Column="1" Margin="8,3,0,3" ToolTip="Leer = bevorzugter Treiberpuffer"/></Grid>
         <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Fähigkeiten abfragen" Click="InputCapabilities_Click"/><Button Content="ASIO-Control-Panel" Click="InputPanel_Click"/></StackPanel>
       </Grid></GroupBox>
-      <TextBlock Text="ASIO und WASAPI Exclusive können das Gerät für andere Programme belegen. Kein automatischer Rückfall auf Shared. ASIO-Aufnahme und -Wiedergabe werden getrennt betrieben; kein Full-Duplex- oder ASIO-Loopback-Versprechen." TextWrapping="Wrap" Foreground="#A5B9C1"/>
+      <CheckBox x:Name="MonitorInputBox" Content="ASIO-Eingang während der Aufnahme abhören" Foreground="#E4ECEF" Margin="0,4"/>
+      <TextBlock Text="Zum Abhören Kopfhörer verwenden. Aufnahme und Ausgabe müssen denselben ASIO-Treiber nutzen. Die Einstellung gilt bis zum Programmende." TextWrapping="Wrap" Foreground="#A5B9C1"/>
+      <TextBlock Text="ASIO und WASAPI Exclusive können das Gerät für andere Programme belegen. Der gewählte Backend-Modus bleibt verbindlich." TextWrapping="Wrap" Foreground="#A5B9C1"/>
       <TextBlock x:Name="CapabilitiesText" TextWrapping="Wrap" Foreground="#A5D9CD"/>
     </StackPanel></ScrollViewer>
   </DockPanel>

@@ -41,6 +41,21 @@ public sealed record AudioHardwareConfiguration
     public AudioDeviceConfiguration Input { get; init; } = new();
 }
 
+internal static class AsioMonitoringConfiguration
+{
+    internal static AudioDeviceConfiguration Combine(AudioDeviceConfiguration input, AudioDeviceConfiguration output)
+    {
+        if (input.Backend != AudioBackendKind.Asio || output.Backend != AudioBackendKind.Asio ||
+            string.IsNullOrEmpty(input.DeviceId) || !string.Equals(input.DeviceId, output.DeviceId, StringComparison.Ordinal))
+            throw new NotSupportedException("ASIO-Monitoring benötigt denselben ASIO-Treiber für Aufnahme und Wiedergabe.");
+        if (input.SampleRate != 0 && output.SampleRate != 0 && input.SampleRate != output.SampleRate ||
+            input.AsioBufferFrames is { } inputFrames && output.AsioBufferFrames is { } outputFrames && inputFrames != outputFrames)
+            throw new NotSupportedException("ASIO-Monitoring benötigt eine gemeinsame Abtastrate und Puffergröße.");
+        return input with { SampleRate = input.SampleRate != 0 ? input.SampleRate : output.SampleRate,
+            AsioBufferFrames = input.AsioBufferFrames ?? output.AsioBufferFrames };
+    }
+}
+
 internal static class AudioHardwareSettingsStore
 {
     private static readonly JsonSerializerOptions Json = new() { WriteIndented = true, Converters = { new JsonStringEnumConverter() } };
@@ -73,17 +88,21 @@ public static class AudioHardwareSettings
     public static string? InputDeviceId => Input.DeviceId;
     public static bool OutputReselectionRequired { get; private set; }
     public static bool InputReselectionRequired { get; private set; }
+    internal static bool MonitorInput { get; private set; }
 
     private static AudioHardwareConfiguration Read()
     {
         try { return AudioHardwareSettingsStore.Load(PathName); }
         catch (Exception e) { LoadError = "Audio-Einstellungen konnten nicht geladen werden: " + e.Message; InputReselectionRequired = true; return new(); }
     }
-    public static void Apply(AudioDeviceConfiguration output, AudioDeviceConfiguration input)
+    public static void Apply(AudioDeviceConfiguration output, AudioDeviceConfiguration input) => Apply(output, input, false);
+    internal static void Apply(AudioDeviceConfiguration output, AudioDeviceConfiguration input, bool monitorInput)
     {
+        if (monitorInput) AsioMonitoringConfiguration.Combine(input, output);
         var next = new AudioHardwareConfiguration { Output = output with { Channels = [.. output.Channels] }, Input = input with { Channels = [.. input.Channels] } };
         AudioHardwareSettingsStore.Save(PathName, next);
         configuration = next;
+        MonitorInput = monitorInput;
         OutputReselectionRequired = InputReselectionRequired = false;
         LoadError = null;
     }

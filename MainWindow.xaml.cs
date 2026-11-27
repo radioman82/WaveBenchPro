@@ -1195,7 +1195,8 @@ public partial class MainWindow : Window
             HardwareStatusText.Text = recorder.HardwareStatus?.ToString() ?? "Aufnahme aktiv";
             RecordButton.Content = "■";
             RecordButton.ToolTip = "Aufnahme stoppen (Strg+R)";
-            HintText.Content = $"Aufnahme läuft ({recorder.CaptureFormat?.SampleRate:N0} Hz, {recorder.CaptureFormat?.Channels} Kanäle)…";
+            HintText.Content = $"Aufnahme läuft ({recorder.CaptureFormat?.SampleRate:N0} Hz, {recorder.CaptureFormat?.Channels} Kanäle)"
+                + (AudioHardwareSettings.MonitorInput ? " · ASIO-Monitoring aktiv" : "…");
         }
         catch (Exception exception)
         {

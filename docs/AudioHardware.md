@@ -8,7 +8,9 @@ Open **Optionen → Audio-Hardware**. Input and output each have their own backe
 |---|---|---|---|
 | WASAPI Shared | Yes, default | Yes | Windows may convert into its shared mix format |
 | WASAPI Exclusive | Optional | Not offered | Explicit format must be supported; no silent Shared fallback |
-| ASIO | Optional installed driver | Separately supported | No validated full-duplex or ASIO loopback |
+| ASIO | Optional installed driver | Supported | Optional input monitoring in a shared driver session |
+
+For monitoring, choose the same ASIO driver in both directions and use compatible sample rates and buffer sizes. Select one output channel per input channel. Enable **ASIO-Eingang während der Aufnahme abhören** and use headphones. The switch starts off with each app launch. Only the monitor output is attenuated. Project playback and ASIO loopback are separate from this input monitoring mode.
 | WASAPI Loopback | Not an output mode | Shared output capture | Captures a selected Windows render endpoint |
 
 ## Formats and buffers

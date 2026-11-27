@@ -24,6 +24,7 @@ public partial class AudioHardwareWindow : Window
         loading = false;
         LoadDevices(true, AudioHardwareSettings.Output.DeviceId); LoadDevices(false, AudioHardwareSettings.Input.DeviceId);
         HardwareErrorText.Text = AudioHardwareSettings.LoadError ?? "";
+        MonitorInputBox.IsChecked = AudioHardwareSettings.MonitorInput;
     }
     private static T Value<T>(ComboBox box) => box.SelectedItem is Choice<T> item ? item.Value : throw new InvalidOperationException("Bitte einen Eintrag auswählen.");
     private static void Select<T>(ComboBox box, T value) => box.SelectedItem = box.Items.Cast<Choice<T>>().FirstOrDefault(x => EqualityComparer<T>.Default.Equals(x.Value, value));
@@ -62,7 +63,7 @@ public partial class AudioHardwareWindow : Window
     }
     private void Ok_Click(object sender, RoutedEventArgs e)
     {
-        try { AudioHardwareSettings.Apply(Read(true), Read(false)); DialogResult = true; }
+        try { AudioHardwareSettings.Apply(Read(true), Read(false), MonitorInputBox.IsChecked == true); DialogResult = true; }
         catch (Exception error) { HardwareErrorText.Text = error.Message; }
     }
     private void Capabilities(bool output)

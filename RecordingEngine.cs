@@ -131,7 +131,12 @@ public sealed class RecordingEngine : IDisposable
     {
         if (AudioHardwareSettings.InputReselectionRequired)
             throw new InvalidOperationException("Das Aufnahmegerät muss unter Audio-Hardware erneut ausgewählt werden.");
-        return AudioHardwareBackend.Default.CreateCapture(AudioHardwareSettings.Input with { DeviceId = deviceId });
+        var input = AudioHardwareSettings.Input with { DeviceId = deviceId };
+        if (!AudioHardwareSettings.MonitorInput) return AudioHardwareBackend.Default.CreateCapture(input);
+        if (AudioHardwareSettings.OutputReselectionRequired)
+            throw new InvalidOperationException("Das Abhörgerät muss unter Audio-Hardware erneut ausgewählt werden.");
+        return new AsioRecordingCapture(AsioMonitoringConfiguration.Combine(input, AudioHardwareSettings.Output),
+            AudioHardwareSettings.Output.Channels);
     }
 
     public void Start(string? deviceId)

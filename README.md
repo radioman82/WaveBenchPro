@@ -42,7 +42,7 @@ The previous engine remains the default and a manual fallback. Failed inserts ar
 - Multitrack projects cannot yet be saved/reopened. Export a mixdown and retain sources separately.
 - Full hardware acceptance is pending; short tests do not establish long-session reliability.
 - Clip/effect changes rerender all occupied tracks. Long projects can need minutes and substantial disk.
-- RIFF/WAV size limits apply; RF64 is not implemented. Exclusive capture, ASIO loopback and validated full-duplex are not provided.
+- RIFF/WAV size limits apply. RF64, Exclusive capture and ASIO loopback are unavailable. Optional ASIO input monitoring uses compatible inputs and outputs of a single driver.
 - Native plugins run in-process and can hang/crash the app. Not every VST3 is compatible or deterministic.
 - The peak clipper is not a lookahead limiter. BPM hints come from filenames, not signal beat detection.
 - Startup time, RAM usage, acoustic latency and glitch-free playback are not guaranteed.

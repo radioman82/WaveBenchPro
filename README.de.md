@@ -40,7 +40,7 @@ Die Mixerregler benötigen keine neue Effektvorbereitung. Bereits gepufferte Dat
 - Mehrspurprojekte lassen sich noch nicht speichern/wieder öffnen. Mixdown exportieren und Quellen separat sichern.
 - Eine vollständige Hardware-Langzeitabnahme steht aus.
 - Nach Clip-/Effektänderungen werden alle belegten Spuren vorbereitet. Große Projekte können Minuten und viel Disk benötigen.
-- RIFF-WAV-Grenzen gelten; RF64 fehlt. Exclusive-Aufnahme, ASIO-Loopback und abgenommenes Full-Duplex werden nicht angeboten.
+- RIFF-WAV-Grenzen gelten. RF64, Exclusive-Aufnahme und ASIO-Loopback fehlen. ASIO-Eingangsmonitoring ist für kompatible Ein- und Ausgänge desselben Treibers optional.
 - Native Plugins laufen im Programmprozess und können hängen/abstürzen. Nicht jedes VST3 ist kompatibel oder deterministisch.
 - Der Peak-Clipper ist kein Lookahead-Limiter. BPM-Zahlen kommen aus Dateinamen; es gibt keine Beat-Erkennung.
 - Startzeit, RAM, akustische Latenz und dauerhaft störungsfreie Wiedergabe sind nicht pauschal zugesichert.
