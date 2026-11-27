@@ -132,6 +132,9 @@ public sealed class RecordingEngine : IDisposable
         if (AudioHardwareSettings.InputReselectionRequired)
             throw new InvalidOperationException("Das Aufnahmegerät muss unter Audio-Hardware erneut ausgewählt werden.");
         var input = AudioHardwareSettings.Input with { DeviceId = deviceId };
+#if BETA_PROFILE
+        if (input.Backend == AudioBackendKind.Asio) throw new NotSupportedException("ASIO ist in dieser Beta noch nicht freigegeben. Bitte WASAPI auswählen.");
+#endif
         if (!AudioHardwareSettings.MonitorInput) return AudioHardwareBackend.Default.CreateCapture(input);
         if (AudioHardwareSettings.OutputReselectionRequired)
             throw new InvalidOperationException("Das Abhörgerät muss unter Audio-Hardware erneut ausgewählt werden.");

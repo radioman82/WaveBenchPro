@@ -3,7 +3,7 @@
     <OutputType>WinExe</OutputType>
     <AssemblyName>WaveBenchPro</AssemblyName>
     <Product>WaveBench Pro</Product>
-    <Version>0.3.0-beta.2</Version>
+    <Version>0.3.0-beta.3</Version>
     <AssemblyVersion>0.3.0.0</AssemblyVersion>
     <FileVersion>0.3.0.0</FileVersion>
     <Deterministic>true</Deterministic>
@@ -25,6 +25,9 @@
   <PropertyGroup>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(BetaProfile)' == 'true'">
+    <DefineConstants>$(DefineConstants);BETA_PROFILE</DefineConstants>
+  </PropertyGroup>
   <ItemGroup>
     <Compile Include="**\*.cs" Exclude="tests\**\*.cs;benchmarks\**\*.cs;.tooling\**\*.cs;obj\**\*.cs;bin\**\*.cs" />
     <InternalsVisibleTo Include="WellenEditor.Tests" />
@@ -36,7 +39,7 @@
     <PackageReference Include="org.sndfile.runtime.win-x64" Version="1.2.2" />
   </ItemGroup>
   <Target Name="PublishReplaceableWindowsCodecs" BeforeTargets="_ComputeFilesToBundle"
-          Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+          Condition="'$(RuntimeIdentifier)' == 'win-x64' and '$(BetaProfile)' != 'true'">
     <ItemGroup>
       <!-- The runtime searched its bundle extraction directory ahead of codec sidecars. -->
       <ResolvedFileToPublish Update="@(ResolvedFileToPublish)"
@@ -45,6 +48,12 @@
       </ResolvedFileToPublish>
       <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
           Condition="'%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension)' == 'libmp3lame.32.dll'" />
+    </ItemGroup>
+  </Target>
+  <Target Name="RemoveBetaNativeCodecs" BeforeTargets="_ComputeFilesToBundle" Condition="'$(BetaProfile)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(ResolvedFileToPublish)"
+          Condition="$([System.String]::Copy(';FLAC.dll;ogg.dll;opus.dll;vorbis.dll;vorbisenc.dll;vorbisfile.dll;sndfile.dll;mpg123.dll;out123.dll;syn123.dll;libmp3lame.dll;libmp3lame.64.dll;libmp3lame.32.dll;').Contains(';%(ResolvedFileToPublish.Filename)%(ResolvedFileToPublish.Extension);'))" />
     </ItemGroup>
   </Target>
 </Project>

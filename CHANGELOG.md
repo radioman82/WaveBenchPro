@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.0-beta.3 — candidate
+
+- The beta profile offers WAV import/export and excludes the native compressed-audio codec binaries pending source and licensing review.
+- ASIO is disabled in this profile pending resolution of retained thread handles and further hardware acceptance. WASAPI Shared remains the default.
+- The project code is MIT-licensed. The package includes its license and separate third-party notices.
+- This unsigned candidate remains subject to acceptance, contributor-rights checks and clean-host testing.
+
 ## Unreleased — hardware backends
 
 - Unified NAudio 3.3.0 builder-based WASAPI playback/capture, retaining Shared default and both multitrack engines.

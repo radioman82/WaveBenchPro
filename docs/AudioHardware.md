@@ -1,5 +1,7 @@
 # Audio hardware
 
+**Beta.3 profile:** ASIO is disabled pending resolution of the start/stop handle retention and hardware acceptance. Existing ASIO selections require explicit WASAPI reselection. The ASIO descriptions below apply to the ordinary development build.
+
 These backends are unreleased source changes after the frozen beta.2 draft. Existing draft downloads do not contain them.
 
 Open **Optionen → Audio-Hardware**. Input and output each have their own backend and device selection. Apply saves the configuration locally. Shared remains the initial output mode. Select a recording endpoint explicitly before recording; a missing endpoint is not replaced by another microphone.

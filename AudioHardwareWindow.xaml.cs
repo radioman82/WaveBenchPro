@@ -10,8 +10,18 @@ public partial class AudioHardwareWindow : Window
     public AudioHardwareWindow()
     {
         InitializeComponent();
+#if BETA_PROFILE
+        OutputBackendBox.ItemsSource = new[] { new Choice<AudioBackendKind>("WASAPI Shared", AudioBackendKind.WasapiShared), new("WASAPI Exclusive", AudioBackendKind.WasapiExclusive) };
+        InputBackendBox.ItemsSource = new[] { new Choice<AudioBackendKind>("WASAPI Shared", AudioBackendKind.WasapiShared), new("WASAPI Loopback (Shared)", AudioBackendKind.WasapiLoopback) };
+        MonitorInputBox.Visibility = Visibility.Collapsed;
+        MonitoringHelpText.Text = "ASIO ist in dieser Beta bis zur Hardwareabnahme deaktiviert.";
+        OutputAsioPanelButton.Visibility = InputAsioPanelButton.Visibility = Visibility.Collapsed;
+        OutputChannelsBox.IsEnabled = OutputFramesBox.IsEnabled = false;
+        InputChannelsBox.IsEnabled = InputFramesBox.IsEnabled = false;
+#else
         OutputBackendBox.ItemsSource = new[] { new Choice<AudioBackendKind>("WASAPI Shared", AudioBackendKind.WasapiShared), new("WASAPI Exclusive", AudioBackendKind.WasapiExclusive), new("ASIO", AudioBackendKind.Asio) };
         InputBackendBox.ItemsSource = new[] { new Choice<AudioBackendKind>("WASAPI Shared", AudioBackendKind.WasapiShared), new("WASAPI Loopback (Shared)", AudioBackendKind.WasapiLoopback), new("ASIO", AudioBackendKind.Asio) };
+#endif
         foreach (var box in new[] { OutputRateBox, InputRateBox })
             box.ItemsSource = new[] { new Choice<int>("Quelle / Gerätemix", 0), new("44,1 kHz", 44100), new("48 kHz", 48000), new("96 kHz", 96000), new("192 kHz", 192000) };
         OutputEncodingBox.ItemsSource = new[] { new Choice<AudioSampleEncoding>("Quellformat", AudioSampleEncoding.Source), new("PCM 16 Bit", AudioSampleEncoding.Pcm16), new("PCM 24 Bit", AudioSampleEncoding.Pcm24), new("PCM 32 Bit", AudioSampleEncoding.Pcm32), new("Float32", AudioSampleEncoding.Float32) };
@@ -24,6 +34,10 @@ public partial class AudioHardwareWindow : Window
         loading = false;
         LoadDevices(true, AudioHardwareSettings.Output.DeviceId); LoadDevices(false, AudioHardwareSettings.Input.DeviceId);
         HardwareErrorText.Text = AudioHardwareSettings.LoadError ?? "";
+#if BETA_PROFILE
+        if (AudioHardwareSettings.Output.Backend == AudioBackendKind.Asio || AudioHardwareSettings.Input.Backend == AudioBackendKind.Asio)
+            HardwareErrorText.Text = "ASIO ist in dieser Beta deaktiviert. Bitte für beide Richtungen WASAPI auswählen.";
+#endif
         MonitorInputBox.IsChecked = AudioHardwareSettings.MonitorInput;
     }
     private static T Value<T>(ComboBox box) => box.SelectedItem is Choice<T> item ? item.Value : throw new InvalidOperationException("Bitte einen Eintrag auswählen.");

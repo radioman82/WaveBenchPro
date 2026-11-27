@@ -1,5 +1,7 @@
 # User guide
 
+The beta.3 package supports WAV import and export. Compressed audio formats and ASIO are disabled in this beta profile pending codec licensing review and hardware acceptance. Descriptions of these features elsewhere apply to the ordinary development build.
+
 The interface currently uses German labels, included below.
 
 ## Import and editing
@@ -50,7 +52,7 @@ In the experimental engine, close the FX dialog to prepare changes and restart. 
 
 ## Recording
 
-Choose input/output separately in **Optionen → Audio-Hardware** and explicitly select the intended recording device. Shared capture is the default; installed ASIO drivers can be selected separately. Record starts/stops capture; select the intended document/cursor first. See [Audio hardware](AudioHardware.md) for modes, formats, buffers and recovery.
+Choose input/output separately in **Optionen → Audio-Hardware** and explicitly select the intended recording device. Shared capture is the default. ASIO is disabled in the beta.3 profile pending acceptance. Record starts/stops capture; select the intended document/cursor first. See [Audio hardware](AudioHardware.md) for modes, formats, buffers and recovery.
 
 On device/disk errors, read the displayed recovery-file path and secure that WAV. Recovery is failure handling, not project autosave.
 

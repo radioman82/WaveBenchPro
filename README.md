@@ -8,7 +8,7 @@ A Windows audio editor with a classic waveform workspace and a multitrack sequen
 
 ## Download and start
 
-See [GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases) for existing development snapshots and their notes. The proposed **v0.3.0-beta.2 is a draft**, pending acceptance and licensing decisions. Older snapshots can differ from this source tree. The hardware-backend changes below are unreleased source changes and are not in the frozen beta.2 draft assets.
+The **v0.3.0-beta.3** candidate is an unsigned draft pending acceptance and third-party license review. Older snapshots can differ from this source tree. See [GitHub Releases](https://github.com/radioman82/WaveBenchPro/releases).
 
 Extract the entire portable ZIP into a writable folder and run **WaveBenchPro.exe**. Keep companion files and license notices together. The self-contained package includes the .NET runtime; users do not need the SDK. Builds are currently unsigned.
 
@@ -17,11 +17,10 @@ Extract the entire portable ZIP into a writable folder and run **WaveBenchPro.ex
 ## Features
 
 - Waveform selection, cut/copy/paste/delete, undo/redo and selection playback loops.
-- Block-based WAV access with background waveform analysis; compressed imports are decoded into memory.
-- WAV, FLAC, MP3, Ogg Vorbis and Opus import/export with format settings in the export dialog.
+- Block-based WAV access with background waveform analysis and WAV export.
 - Waveform/spectrogram, independent horizontal/vertical zoom and reset.
 - Stereo peak/RMS metering, peak hold and clipping indication.
-- WASAPI Shared by default; optional Exclusive playback and installed ASIO drivers. Separate input/output settings, channel mapping and recording. See [audio hardware](docs/AudioHardware.md).
+- WASAPI Shared by default, with optional Exclusive playback and separate input/output settings. See [audio hardware](docs/AudioHardware.md).
 - Gain, normalization, fades, EQ, high/low-pass, compressor and **peak clipper**.
 - Installed VST3 effects: scanning, plugin editors, state, live audition and offline processing.
 - Multitrack drag-and-drop, automatic tracks, beat/bar grid, tempo, clip placement, volume, pan, mute and solo.
@@ -42,7 +41,7 @@ The previous engine remains the default and a manual fallback. Failed inserts ar
 - Multitrack projects cannot yet be saved/reopened. Export a mixdown and retain sources separately.
 - Full hardware acceptance is pending; short tests do not establish long-session reliability.
 - Clip/effect changes rerender all occupied tracks. Long projects can need minutes and substantial disk.
-- RIFF/WAV size limits apply. RF64, Exclusive capture and ASIO loopback are unavailable. Optional ASIO input monitoring uses compatible inputs and outputs of a single driver.
+- RIFF/WAV size limits apply. RF64 and Exclusive capture are unavailable. ASIO and compressed audio formats are disabled in the beta profile pending acceptance and codec licensing review. The ordinary development build retains these features.
 - Native plugins run in-process and can hang/crash the app. Not every VST3 is compatible or deterministic.
 - The peak clipper is not a lookahead limiter. BPM hints come from filenames, not signal beat detection.
 - Startup time, RAM usage, acoustic latency and glitch-free playback are not guaranteed.

@@ -23,29 +23,11 @@ $publish = Join-Path $OutputDirectory "WaveBenchPro"
 New-Item -ItemType Directory -Path $publish -Force | Out-Null
 & $Dotnet restore (Join-Path $projectRoot "WellenEditor.csproj") --locked-mode
 if ($LASTEXITCODE -ne 0) { throw "Restore failed." }
-& $Dotnet publish (Join-Path $projectRoot "WellenEditor.csproj") -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:ContinuousIntegrationBuild=true "-p:OutputPath=$(Join-Path $OutputDirectory 'build')" -o $publish
+& $Dotnet publish (Join-Path $projectRoot "WellenEditor.csproj") -c Release -r win-x64 --self-contained true --no-restore -p:BetaProfile=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:ContinuousIntegrationBuild=true "-p:OutputPath=$(Join-Path $OutputDirectory 'build')" -o $publish
 if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
-# Verify that the publish target emitted each codec as a sidecar from the locked packages.
-$assets = Get-Content -LiteralPath (Join-Path $projectRoot "obj\project.assets.json") -Raw | ConvertFrom-Json
-foreach ($dependency in @("NAudio.Lame/2.1.0", "org.sndfile.runtime.win-x64/1.2.2")) {
-    $library = $assets.libraries.PSObject.Properties[$dependency].Value
-    $package = $null
-    foreach ($folder in $assets.packageFolders.PSObject.Properties.Name) {
-        $candidate = Join-Path $folder $library.path
-        if (Test-Path -LiteralPath $candidate) { $package = $candidate; break }
-    }
-    if (-not $package) { throw "Restored codec package is missing: $dependency" }
-    $nativeFiles = @(Get-ChildItem -LiteralPath $package -Filter *.dll -Recurse | Where-Object {
-        $_.Name -eq "libmp3lame.64.dll" -or $_.FullName -match '[\\/]runtimes[\\/]win-x64[\\/]native[\\/]'
-    })
-    if ($nativeFiles.Count -eq 0) { throw "Native codec files are missing: $dependency" }
-    foreach ($file in $nativeFiles) {
-        $sidecar = Join-Path $publish $file.Name
-        if (-not (Test-Path -LiteralPath $sidecar -PathType Leaf)) { throw "Published codec sidecar is missing: $($file.Name)" }
-        if ((Get-Sha256 $sidecar) -ne (Get-Sha256 $file.FullName)) {
-            throw "Published codec does not match the locked package: $($file.Name)"
-        }
-    }
+# The beta supports WAV and does not distribute native codec binaries.
+foreach ($codec in @("FLAC.dll", "ogg.dll", "opus.dll", "vorbis.dll", "vorbisenc.dll", "vorbisfile.dll", "sndfile.dll", "mpg123.dll", "out123.dll", "syn123.dll", "libmp3lame.dll", "libmp3lame.64.dll", "libmp3lame.32.dll")) {
+    if (Test-Path -LiteralPath (Join-Path $publish $codec)) { throw "Unexpected beta codec: $codec" }
 }
 foreach ($name in @("LICENSE", "README.md", "README.de.md", "CHANGELOG.md", "THIRD-PARTY-NOTICES.md", "global.json", "packages.lock.json")) {
     Copy-Item -LiteralPath (Join-Path $projectRoot $name) -Destination $publish

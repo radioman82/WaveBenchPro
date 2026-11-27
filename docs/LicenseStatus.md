@@ -14,7 +14,9 @@ The NAudio 3.3.0 family, including the explicitly added NAudio.Asio 3.3.0 packag
 
 ## Native codecs
 
-The runtime package contains sndfile, FLAC, Ogg, Vorbis, Opus, mpg123/out123/syn123 and libmp3lame DLLs. NAudio.Lame supplies native LAME binaries for both Windows architectures. The current win-x64 publishing target emits only the x64 codec DLLs beside the executable. The [native dependency inventory](NativeDependencies.json) records hashes from the restored packages.
+The beta.3 publish profile excludes the native compressed-audio codec binaries and restricts the UI and import path to WAV. The historical codec inventories below describe the ordinary development build and earlier packages. Their source and licensing questions remain open for any future package that includes them.
+
+The runtime package contains sndfile, FLAC, Ogg, Vorbis, Opus, mpg123/out123/syn123 and libmp3lame DLLs. NAudio.Lame supplies native LAME binaries for both Windows architectures. The ordinary development configuration retains codec support. The [native dependency inventory](NativeDependencies.json) records hashes from the restored packages.
 
 The runtime package metadata says Apache-2.0, while the upstream [libsndfile licensing page](https://libsndfile.github.io/libsndfile/#licensing) identifies LGPL terms. Package metadata does not replace each bundled library's license.
 

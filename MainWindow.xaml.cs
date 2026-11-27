@@ -234,7 +234,11 @@ public partial class MainWindow : Window
 
     private void Open_Click(object sender, RoutedEventArgs e)
     {
+#if BETA_PROFILE
+        var dialog = new OpenFileDialog { Filter = "WAV-Audiodateien|*.wav" };
+#else
         var dialog = new OpenFileDialog { Filter = "Audiodateien|*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.wma|Alle Dateien|*.*" };
+#endif
         if (dialog.ShowDialog(this) == true) OpenAudio(dialog.FileName);
     }
 
@@ -943,7 +947,11 @@ public partial class MainWindow : Window
             HintText.Content = "Keine Datei geladen.";
             return false;
         }
+#if BETA_PROFILE
+        var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.DisplayName)}_bearbeitet.wav" };
+#else
         var dialog = new SaveFileDialog { Filter = "WAV 16-Bit PCM|*.wav|WAV 24-Bit PCM|*.wav|WAV 32-Bit Float|*.wav|MP3 192 kBit/s|*.mp3|MP3 320 kBit/s|*.mp3|FLAC|*.flac|OGG Vorbis|*.ogg|Opus|*.opus", FilterIndex = 2, FileName = $"{Path.GetFileNameWithoutExtension(document.DisplayName)}_bearbeitet.wav" };
+#endif
         if (dialog.ShowDialog(this) != true) return false;
         try
         {

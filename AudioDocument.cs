@@ -111,6 +111,10 @@ public sealed class AudioDocument : IDisposable
     public static AudioDocument Load(string path)
     {
         var fullPath = Path.GetFullPath(path);
+#if BETA_PROFILE
+        if (!string.Equals(Path.GetExtension(fullPath), ".wav", StringComparison.OrdinalIgnoreCase))
+            throw new NotSupportedException("Diese Beta unterstützt ausschließlich WAV-Dateien.");
+#endif
         if (string.Equals(Path.GetExtension(fullPath), ".wav", StringComparison.OrdinalIgnoreCase))
         {
             using var source = new WavFileAudioSource(fullPath);

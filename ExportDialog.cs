@@ -38,10 +38,12 @@ internal sealed class ExportDialog : Window
         FontSize = 11;
 
         formatBox.Items.Add("WAV");
+#if !BETA_PROFILE
         formatBox.Items.Add("MP3");
         formatBox.Items.Add("FLAC");
         formatBox.Items.Add("OGG Vorbis");
         formatBox.Items.Add("Opus");
+#endif
         formatBox.SelectedIndex = 0;
 
         rangeBox.Items.Add("Gesamte Datei");

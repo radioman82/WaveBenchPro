@@ -2,6 +2,8 @@
 
 WaveBench Pro's own code is licensed under the MIT License in [LICENSE](LICENSE). Third-party software has separate licenses.
 
+The beta.3 publish profile excludes the native compressed-audio codecs listed below and supports WAV files. The codec entries document dependencies of the ordinary development build and earlier packages.
+
 | Component | Package / origin | Notice |
 |---|---|---|
 | NAudio Core, MIDI, WinMM, WASAPI and SoundFile | NAudio 3.3.0 family | MIT notice from the exact package source commit in licenses/NAudio-MIT.txt |

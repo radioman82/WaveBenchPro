@@ -74,11 +74,17 @@ internal sealed class AudioHardwareBackend : IAudioHardwareBackend
     public IAudioPlayback CreatePlayback(AudioDeviceConfiguration configuration)
     {
         configuration.Validate(AudioDirection.Output);
+#if BETA_PROFILE
+        if (configuration.Backend == AudioBackendKind.Asio) throw new NotSupportedException("ASIO ist in dieser Beta noch nicht freigegeben. Bitte WASAPI auswählen.");
+#endif
         return configuration.Backend == AudioBackendKind.Asio ? new AsioPlayback(configuration) : new WasapiPlayback(configuration);
     }
     public IRecordingCapture CreateCapture(AudioDeviceConfiguration configuration)
     {
         configuration.Validate(AudioDirection.Input);
+#if BETA_PROFILE
+        if (configuration.Backend == AudioBackendKind.Asio) throw new NotSupportedException("ASIO ist in dieser Beta noch nicht freigegeben. Bitte WASAPI auswählen.");
+#endif
         return configuration.Backend == AudioBackendKind.Asio ? new AsioRecordingCapture(configuration) : new WasapiRecordingCapture(configuration);
     }
     public string DescribeCapabilities(AudioDeviceConfiguration configuration, AudioDirection direction)

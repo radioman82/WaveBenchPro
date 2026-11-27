@@ -16,17 +16,17 @@
         <TextBlock Grid.Row="2" Text="Rate / Ausgabeformat"/><StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal"><ComboBox x:Name="OutputRateBox" DisplayMemberPath="Name" MinWidth="150"/><ComboBox x:Name="OutputEncodingBox" DisplayMemberPath="Name" MinWidth="185" Margin="8,3,0,3"/></StackPanel>
         <TextBlock Grid.Row="3" Text="WASAPI-Puffer (ms)"/><TextBox x:Name="OutputBufferBox" Grid.Row="3" Grid.Column="1"/>
         <TextBlock Grid.Row="4" Text="ASIO: Kanäle / Frames"/><Grid Grid.Row="4" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="OutputChannelsBox" ToolTip="Kanalnummern ab 1, z.B. 1,2; leer = erste Quellkanäle"/><TextBox x:Name="OutputFramesBox" Grid.Column="1" Margin="8,3,0,3" ToolTip="Leer = bevorzugter Treiberpuffer; sonst exakte Framezahl"/></Grid>
-        <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Formate und Puffer abfragen" Click="OutputCapabilities_Click"/><Button Content="ASIO-Control-Panel" Click="OutputPanel_Click"/></StackPanel>
+        <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Formate und Puffer abfragen" Click="OutputCapabilities_Click"/><Button x:Name="OutputAsioPanelButton" Content="ASIO-Control-Panel" Click="OutputPanel_Click"/></StackPanel>
       </Grid></GroupBox>
       <GroupBox Header="Aufnahme"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="160"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
         <TextBlock Text="Backend / Modus"/><ComboBox x:Name="InputBackendBox" Grid.Column="1" DisplayMemberPath="Name" SelectionChanged="InputMode_Changed"/>
         <TextBlock Grid.Row="1" Text="Gerät / Treiber"/><ComboBox x:Name="InputDeviceBox" Grid.Row="1" Grid.Column="1" DisplayMemberPath="Name"/>
         <TextBlock Grid.Row="2" Text="Rate / WASAPI-ms"/><Grid Grid.Row="2" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><ComboBox x:Name="InputRateBox" DisplayMemberPath="Name"/><TextBox x:Name="InputBufferBox" Grid.Column="1" Margin="8,3,0,3"/></Grid>
         <TextBlock Grid.Row="3" Text="ASIO: Kanäle / Frames"/><Grid Grid.Row="3" Grid.Column="1"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition/></Grid.ColumnDefinitions><TextBox x:Name="InputChannelsBox" ToolTip="Kanalnummern ab 1, z.B. 1,2; leer = erste zwei Eingänge"/><TextBox x:Name="InputFramesBox" Grid.Column="1" Margin="8,3,0,3" ToolTip="Leer = bevorzugter Treiberpuffer"/></Grid>
-        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Fähigkeiten abfragen" Click="InputCapabilities_Click"/><Button Content="ASIO-Control-Panel" Click="InputPanel_Click"/></StackPanel>
+        <StackPanel Grid.Row="4" Grid.ColumnSpan="2" Orientation="Horizontal"><Button Content="Fähigkeiten abfragen" Click="InputCapabilities_Click"/><Button x:Name="InputAsioPanelButton" Content="ASIO-Control-Panel" Click="InputPanel_Click"/></StackPanel>
       </Grid></GroupBox>
       <CheckBox x:Name="MonitorInputBox" Content="ASIO-Eingang während der Aufnahme abhören" Foreground="#E4ECEF" Margin="0,4"/>
-      <TextBlock Text="Zum Abhören Kopfhörer verwenden. Aufnahme und Ausgabe müssen denselben ASIO-Treiber nutzen. Die Einstellung gilt bis zum Programmende." TextWrapping="Wrap" Foreground="#A5B9C1"/>
+      <TextBlock x:Name="MonitoringHelpText" Text="Zum Abhören Kopfhörer verwenden. Aufnahme und Ausgabe müssen denselben ASIO-Treiber nutzen. Die Einstellung gilt bis zum Programmende." TextWrapping="Wrap" Foreground="#A5B9C1"/>
       <TextBlock Text="ASIO und WASAPI Exclusive können das Gerät für andere Programme belegen. Der gewählte Backend-Modus bleibt verbindlich." TextWrapping="Wrap" Foreground="#A5B9C1"/>
       <TextBlock x:Name="CapabilitiesText" TextWrapping="Wrap" Foreground="#A5D9CD"/>
     </StackPanel></ScrollViewer>
