@@ -25,6 +25,9 @@ Das portable ZIP vollständig in einen beschreibbaren Ordner entpacken und **Wav
 - Installierte VST3-Effekte scannen, bearbeiten, live abhören und offline anwenden.
 - Dateien in Mehrspur ziehen: Spuren entstehen automatisch. Beat-/Taktraster, BPM, Clippositionen, Lautstärke, Panorama, Stumm und Solo.
 - Spur-Inserts, verschiebbare Auswahl-Schleifen und blockweiser WAV-Mixdown.
+- Mehrspurprojekte speichern/öffnen: unveränderte Quellen bleiben Referenzen,
+  bearbeitete und aufgenommene Quellen werden projektsicher als Assets abgelegt.
+  Details: [Projektformat](docs/ProjectFormat.md).
 
 ![Mehrspuransicht](docs/images/multitrack.png)
 
@@ -36,7 +39,8 @@ Die Mixerregler benötigen keine neue Effektvorbereitung. Bereits gepufferte Dat
 
 ## Bekannte Grenzen
 
-- Mehrspurprojekte lassen sich noch nicht speichern/wieder öffnen. Mixdown exportieren und Quellen separat sichern.
+- Die grafische Abnahme der Projekt-Dialoge steht noch aus; die Speicherung und
+  Wiederherstellung sind über die Regressionstests abgedeckt.
 - Eine vollständige Hardware-Langzeitabnahme steht aus.
 - Nach Clip-/Effektänderungen werden alle belegten Spuren vorbereitet. Große Projekte können Minuten und viel Disk benötigen.
 - RIFF-WAV-Grenzen gelten. RF64 und Exclusive-Aufnahme fehlen. ASIO und komprimierte Audioformate sind im Beta-Profil bis zur Abnahme beziehungsweise Lizenzklärung deaktiviert. Im normalen Entwicklungsbuild bleiben sie erhalten.

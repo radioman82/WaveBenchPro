@@ -10,7 +10,7 @@ public sealed class ProjectFileFormatTests
     public void ManifestRoundTripPreservesFramePositionsAndSharedSource()
     {
         var source = Guid.NewGuid();
-        var project = new ProjectFileFormat.Manifest(1, "Test", 48000, 120,
+        var project = new ProjectFileFormat.Manifest(ProjectFileFormat.Version, "Test", 48000, 120,
             [new(source, "audio.wav", 100, new string('a', 64))],
             [new(Guid.NewGuid(), "Spur", 1, 0, false, false,
                 [new(Guid.NewGuid(), source, 987654321, 1.25), new(Guid.NewGuid(), source, 17, 1)])]);
@@ -22,9 +22,9 @@ public sealed class ProjectFileFormatTests
     [Fact]
     public void RejectsNewVersionAndUnknownProperties()
     {
-        var newer = Encoding.UTF8.GetBytes("{\"formatVersion\":2,\"name\":\"x\",\"sampleRate\":44100,\"bpm\":120,\"sources\":[],\"tracks\":[]}");
+        var newer = Encoding.UTF8.GetBytes("{\"formatVersion\":999,\"name\":\"x\",\"sampleRate\":44100,\"bpm\":120,\"sources\":[],\"tracks\":[]}");
         Assert.Throws<InvalidDataException>(() => ProjectFileFormat.Parse(newer));
-        var unknown = Encoding.UTF8.GetBytes("{\"formatVersion\":1,\"name\":\"x\",\"sampleRate\":44100,\"bpm\":120,\"sources\":[],\"tracks\":[],\"future\":true}");
+        var unknown = Encoding.UTF8.GetBytes("{\"formatVersion\":2,\"name\":\"x\",\"sampleRate\":44100,\"bpm\":120,\"sources\":[],\"tracks\":[],\"future\":true}");
         Assert.Throws<System.Text.Json.JsonException>(() => ProjectFileFormat.Parse(unknown));
     }
 }

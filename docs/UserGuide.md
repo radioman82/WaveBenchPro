@@ -38,7 +38,13 @@ Drag on the timeline ruler to create a selection loop. Drag its edges to resize 
 
 **Mixdown als WAV** exports in blocks. Export length follows audible tracks; experimental playback keeps the full timeline so muted long tracks can be enabled live.
 
-Projects cannot yet be saved/reopened or autosaved. Retain sources and export a mixdown before closing.
+Use **Datei → Neues Mehrspurprojekt**, **Projekt öffnen**, **Projekt speichern** or
+**Projekt speichern unter** for `.wbproj` files. Unchanged source files remain
+references; changed/recorded audio is kept in the project asset folder. Every
+two minutes, changed projects get up to three separate recovery generations in
+the local WaveBench recovery folder; this never overwrites the consciously
+saved project. A failed autosave is shown in the status bar. Details and limits:
+[project format](ProjectFormat.md).
 
 ## Effects and VST3
 

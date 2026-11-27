@@ -10,17 +10,21 @@ public sealed class MultitrackProject
     private readonly List<MultitrackTrack> tracks = new();
     private int nextTrackNumber = 1;
 
+    /// <summary>Stable project identity used by project files and recovery data.</summary>
+    public Guid Id { get; } = Guid.NewGuid();
+    public string Name { get; internal set; } = "Unbenanntes Projekt";
+
     public IReadOnlyList<MultitrackTrack> Tracks => tracks;
     public int SampleRate { get; private set; } = 44100;
     public double Bpm { get; private set; } = 120;
     private bool explicitTempo;
     public double FramesPerBeat => SampleRate * 60d / Bpm;
 
-    internal static MultitrackProject Restore(int sampleRate, double bpm)
+    internal static MultitrackProject Restore(int sampleRate, double bpm, string? name = null)
     {
         if (sampleRate is < 8000 or > 384000 || !double.IsFinite(bpm) || bpm is < 30 or > 300)
             throw new ArgumentOutOfRangeException(nameof(sampleRate));
-        return new MultitrackProject { SampleRate = sampleRate, Bpm = bpm, explicitTempo = true };
+        return new MultitrackProject { SampleRate = sampleRate, Bpm = bpm, explicitTempo = true, Name = string.IsNullOrWhiteSpace(name) ? "Unbenanntes Projekt" : name.Trim() };
     }
 
     public void Add(AudioDocument source)
@@ -81,12 +85,13 @@ public sealed class MultitrackProject
         foreach (var track in tracks)
         {
             var target = copy.AddEmptyTrack();
-            target.Name = track.Name; target.Gain = track.Gain; target.Pan = track.Pan;
+            target.Id = track.Id; target.Name = track.Name; target.Gain = track.Gain; target.Pan = track.Pan;
             target.Muted = track.Muted; target.Solo = track.Solo;
             target.SetEffects(track.Effects.Select(effect => effect with { VstState = effect.VstState?.ToArray() }));
             foreach (var clip in track.Clips)
             {
                 target.SetClip(clip.Source, clip.StartFrame);
+                target.Clips[^1].Id = clip.Id;
                 target.Clips[^1].DurationScale = clip.DurationScale;
             }
         }
@@ -131,6 +136,7 @@ public sealed class MultitrackTrack
 
     private string name;
     public int Number { get; }
+    public Guid Id { get; internal set; } = Guid.NewGuid();
     public int ProjectSampleRate { get; }
     public AudioDocument? Source { get; private set; }
     public string Name { get => name; set => name = string.IsNullOrWhiteSpace(value) ? $"Spur {Number}" : value.Trim(); }
@@ -180,6 +186,7 @@ public sealed class MultitrackClip
 {
     public MultitrackClip(AudioDocument source, long startFrame) { Source = source; StartFrame = startFrame; }
     public AudioDocument Source { get; }
+    public Guid Id { get; internal set; } = Guid.NewGuid();
     public long StartFrame { get; set; }
     public double DurationScale { get; internal set; } = 1;
 }

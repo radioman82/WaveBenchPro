@@ -1,0 +1,38 @@
+{
+  "formatVersion": 2,
+  "name": "Example",
+  "sampleRate": 44100,
+  "bpm": 120,
+  "sources": [
+    {
+      "id": "11111111-1111-1111-1111-111111111111",
+      "path": "silence.wav",
+      "lengthBytes": 176444,
+      "sha256": "8429EB90B0FE5A294BD6AB5AEBAB680D9CF600B2ED45B6C202E0774A4327EDF7",
+      "isAsset": true
+    }
+  ],
+  "tracks": [
+    {
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Example track",
+      "gain": 1,
+      "pan": 0,
+      "muted": false,
+      "solo": false,
+      "clips": [
+        {
+          "id": "33333333-3333-3333-3333-333333333333",
+          "sourceId": "11111111-1111-1111-1111-111111111111",
+          "startFrame": 0,
+          "durationScale": 1,
+          "sourceOffsetFrames": 0,
+          "sourceLengthFrames": null
+        }
+      ],
+      "effects": []
+    }
+  ],
+  "beatsPerBar": 4,
+  "beatUnit": 4
+}

@@ -16,6 +16,10 @@ Extract the entire portable ZIP into a writable folder and run **WaveBenchPro.ex
 
 ## Features
 
+- Versioned `.wbproj` multitrack projects with atomic saves, source hashes,
+  durable assets for edited/recorded audio and local recovery generations.
+  See [Project format](docs/ProjectFormat.md).
+
 - Waveform selection, cut/copy/paste/delete, undo/redo and selection playback loops.
 - Block-based WAV access with background waveform analysis and WAV export.
 - Waveform/spectrogram, independent horizontal/vertical zoom and reset.

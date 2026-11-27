@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — project files
+
+- Added validated, versioned `.wbproj` persistence for multitrack routing,
+  mixer state, clip timing/stretch and native/VST3 insert state.
+- Project saves atomically, records hashes for references and writes durable
+  WAV assets for edited/recorded sources; loading is transactional.
+- Added Project New/Open/Save/Save As commands. No public release is implied.
+
 ## 0.3.0-beta.3 — candidate
 
 - The beta profile offers WAV import/export and excludes the native compressed-audio codec binaries pending source and licensing review.

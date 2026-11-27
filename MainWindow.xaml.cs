@@ -56,13 +56,17 @@ public partial class MainWindow : Window
     private int recordingTargetFrame;
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
     private bool isScanningVst;
-    private readonly MultitrackProject multitrack = new();
+    private MultitrackProject multitrack = new();
+    private string? multitrackProjectPath;
+    private bool multitrackDirty;
     private MultitrackTrack? selectedTrack;
     private AudioDocument? dragSourceDocument;
     private Point dragStartPoint;
     private bool isDocumentDragging;
     private bool preparingMultitrack;
     private int playbackPreparationVersion;
+    private readonly DispatcherTimer projectRecoveryTimer = new() { Interval = TimeSpan.FromMinutes(2) };
+    private bool recoverySaving;
 
     private enum SavePromptResult { Save, Discard, Cancel }
 
@@ -103,7 +107,7 @@ public partial class MainWindow : Window
             var restartCursor = Sequencer.PositionSeconds;
             if (restartBlock) StopPlayback();
             var dialog = new TrackEffectsWindow(this, track,
-                () => { multitrackMixer?.UpdateTrackEffects(track); Sequencer.SetProject(multitrack); },
+                () => { multitrackDirty = true; multitrackMixer?.UpdateTrackEffects(track); Sequencer.SetProject(multitrack); },
                 () => { if (!isPlaying) PlayMultitrack_Click(this, new RoutedEventArgs()); },
                 StopPlayback, vstEffects,
                 livePlugin =>
@@ -131,11 +135,13 @@ public partial class MainWindow : Window
         {
             StopPlayback();
             multitrack.Remove(track);
+            multitrackDirty = true;
             selectedTrack = multitrack.Tracks.FirstOrDefault();
             RefreshMultitrack();
         };
         Sequencer.ProjectChanged += () =>
         {
+            multitrackDirty = true;
             RestartBlockPlayback();
             BpmText.Text = multitrack.Bpm.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture);
             MultitrackInfo.Text = $"{multitrack.Tracks.Count} Spuren · {multitrack.Bpm:0.##} BPM";
@@ -166,6 +172,11 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, "Die Aufnahme wird noch abgeschlossen. Bitte das Programm geöffnet lassen, bis der Datenträger wieder reagiert.", "Aufnahme", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            if (!ConfirmProjectDiscard())
+            {
+                e.Cancel = true;
+                return;
+            }
             if (!ConfirmCloseAllDocuments())
             {
                 e.Cancel = true;
@@ -191,6 +202,15 @@ public partial class MainWindow : Window
             if (!DisposeRecorderForClose() || hardwareLifetime.HasPending) e.Cancel = true;
         };
         playbackTimer.Tick += PlaybackTimer_Tick;
+        projectRecoveryTimer.Tick += async (_, _) =>
+        {
+            if (!multitrackDirty || recoverySaving || multitrack.Tracks.Count == 0) return;
+            recoverySaving = true;
+            try { await ProjectRecovery.SaveAsync(multitrack, CancellationToken.None); }
+            catch { HintText.Content = "Projekt-Autosave fehlgeschlagen; bitte manuell speichern."; }
+            finally { recoverySaving = false; }
+        };
+        projectRecoveryTimer.Start();
         Loaded += (_, _) =>
         {
             var startupFile = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
@@ -240,6 +260,60 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog { Filter = "Audiodateien|*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.wma|Alle Dateien|*.*" };
 #endif
         if (dialog.ShowDialog(this) == true) OpenAudio(dialog.FileName);
+    }
+
+    private void NewProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmProjectDiscard()) return;
+        StopPlayback();
+        multitrack = new MultitrackProject(); multitrackProjectPath = null; multitrackDirty = false; selectedTrack = null;
+        RefreshMultitrack(); MultitrackView_Click(this, new RoutedEventArgs());
+        HintText.Content = "Neues Mehrspurprojekt erstellt.";
+    }
+
+    private async void OpenProject_Click(object sender, RoutedEventArgs e)
+    {
+        if (!ConfirmProjectDiscard()) return;
+        var dialog = new OpenFileDialog { Filter = "WaveBench-Projekt|*.wbproj" };
+        if (dialog.ShowDialog(this) != true) return;
+        try
+        {
+            StopPlayback();
+            var loaded = await ProjectStorage.LoadReferenceAsync(dialog.FileName, CancellationToken.None);
+            multitrack = loaded.Project; multitrackProjectPath = dialog.FileName; multitrackDirty = false;
+            selectedTrack = multitrack.Tracks.FirstOrDefault(); RefreshMultitrack(); MultitrackView_Click(this, new RoutedEventArgs());
+            HintText.Content = loaded.Warnings.Count == 0 ? "Projekt geöffnet." : "Projekt geöffnet: " + string.Join(" · ", loaded.Warnings);
+        }
+        catch (Exception exception) { MessageBox.Show(this, "Projekt konnte nicht geöffnet werden.\n\n" + exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+
+    private async void SaveProject_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync(false);
+    private async void SaveProjectAs_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync(true);
+    private async Task<bool> SaveProjectAsync(bool saveAs)
+    {
+        if (saveAs || string.IsNullOrWhiteSpace(multitrackProjectPath))
+        {
+            var dialog = new SaveFileDialog { Filter = "WaveBench-Projekt|*.wbproj", DefaultExt = ".wbproj", AddExtension = true, FileName = multitrack.Name + ".wbproj" };
+            if (dialog.ShowDialog(this) != true) return false;
+            multitrackProjectPath = dialog.FileName;
+        }
+        try
+        {
+            HintText.Content = "Projekt wird gespeichert …";
+            await ProjectStorage.SaveAsync(multitrackProjectPath!, multitrack, ProjectSaveMode.Reference, CancellationToken.None);
+            multitrack.Name = Path.GetFileNameWithoutExtension(multitrackProjectPath); multitrackDirty = false;
+            HintText.Content = "Projekt gespeichert: " + Path.GetFileName(multitrackProjectPath); return true;
+        }
+        catch (Exception exception) { MessageBox.Show(this, "Projekt konnte nicht gespeichert werden.\n\n" + exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
+    }
+
+    private bool ConfirmProjectDiscard()
+    {
+        if (!multitrackDirty) return true;
+        var answer = MessageBox.Show(this, "Das Mehrspurprojekt enthält ungespeicherte Änderungen.\n\nSpeichern?", "WaveBench Pro", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
+        if (answer == MessageBoxResult.Cancel) return false;
+        if (answer == MessageBoxResult.Yes) { _ = SaveProjectAsync(false); return false; }
+        return true;
     }
 
     private void EditView_Click(object sender, RoutedEventArgs e)
@@ -1766,9 +1840,14 @@ public partial class MainWindow : Window
             e.Handled = true;
             return;
         }
-        if (key == System.Windows.Input.Key.S && modifiers == System.Windows.Input.ModifierKeys.Control)
+        if (key == System.Windows.Input.Key.S && modifiers.HasFlag(System.Windows.Input.ModifierKeys.Control))
         {
-            if (modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift)) SaveAsCurrent();
+            if (MultitrackPanel.Visibility == Visibility.Visible)
+            {
+                if (modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift)) SaveProjectAs_Click(this, new RoutedEventArgs());
+                else SaveProject_Click(this, new RoutedEventArgs());
+            }
+            else if (modifiers.HasFlag(System.Windows.Input.ModifierKeys.Shift)) SaveAsCurrent();
             else SaveCurrent();
             e.Handled = true;
             return;
