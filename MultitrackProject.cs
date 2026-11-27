@@ -16,6 +16,13 @@ public sealed class MultitrackProject
     private bool explicitTempo;
     public double FramesPerBeat => SampleRate * 60d / Bpm;
 
+    internal static MultitrackProject Restore(int sampleRate, double bpm)
+    {
+        if (sampleRate is < 8000 or > 384000 || !double.IsFinite(bpm) || bpm is < 30 or > 300)
+            throw new ArgumentOutOfRangeException(nameof(sampleRate));
+        return new MultitrackProject { SampleRate = sampleRate, Bpm = bpm, explicitTempo = true };
+    }
+
     public void Add(AudioDocument source)
     {
         ArgumentNullException.ThrowIfNull(source);
