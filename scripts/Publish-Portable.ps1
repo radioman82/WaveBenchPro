@@ -23,7 +23,7 @@ $publish = Join-Path $OutputDirectory "WaveBenchPro"
 New-Item -ItemType Directory -Path $publish -Force | Out-Null
 & $Dotnet restore (Join-Path $projectRoot "WellenEditor.csproj") --locked-mode
 if ($LASTEXITCODE -ne 0) { throw "Restore failed." }
-& $Dotnet publish (Join-Path $projectRoot "WellenEditor.csproj") -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:ContinuousIntegrationBuild=true -o $publish
+& $Dotnet publish (Join-Path $projectRoot "WellenEditor.csproj") -c Release -r win-x64 --self-contained true --no-restore -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:ContinuousIntegrationBuild=true "-p:OutputPath=$(Join-Path $OutputDirectory 'build')" -o $publish
 if ($LASTEXITCODE -ne 0) { throw "Publish failed." }
 # Verify that the publish target emitted each codec as a sidecar from the locked packages.
 $assets = Get-Content -LiteralPath (Join-Path $projectRoot "obj\project.assets.json") -Raw | ConvertFrom-Json
