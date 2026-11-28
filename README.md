@@ -1,5 +1,7 @@
 # WaveBench Pro
 
+09A: project recovery selection (Restore / Discard / Later), verified missing-source relinking and **Save portable project** are now available. Project format 3 preserves view/loop state and reads format 2. Saves are transactional and cancellable; failed operations keep the previous project and file. See [Project format](docs/ProjectFormat.md). Visual GUI and real audio-device acceptance remain separate from automated tests.
+
 [Deutsch](README.de.md) · [User guide](docs/UserGuide.md) · [Architecture](docs/Architecture.md)
 
 A Windows audio editor with a classic waveform workspace and a multitrack sequencer. Built with C#, WPF, .NET 9 and NAudio.

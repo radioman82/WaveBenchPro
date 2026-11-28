@@ -56,9 +56,10 @@ public partial class MainWindow : Window
     private int recordingTargetFrame;
     private IReadOnlyList<Vst3EffectDescriptor> vstEffects = Array.Empty<Vst3EffectDescriptor>();
     private bool isScanningVst;
-    private MultitrackProject multitrack = new();
-    private string? multitrackProjectPath;
-    private bool multitrackDirty;
+    private readonly ProjectWorkspace projectWorkspace = new();
+    private MultitrackProject multitrack => projectWorkspace.Project;
+    private string? multitrackProjectPath => projectWorkspace.Path;
+    private bool multitrackDirty { get => projectWorkspace.IsDirty; set { if (value) projectWorkspace.MarkDirty(); else projectWorkspace.MarkClean(); } }
     private MultitrackTrack? selectedTrack;
     private AudioDocument? dragSourceDocument;
     private Point dragStartPoint;
@@ -67,6 +68,7 @@ public partial class MainWindow : Window
     private int playbackPreparationVersion;
     private readonly DispatcherTimer projectRecoveryTimer = new() { Interval = TimeSpan.FromMinutes(2) };
     private bool recoverySaving;
+    private Window? projectProgressOwner;
 
     private enum SavePromptResult { Save, Discard, Cancel }
 
@@ -97,10 +99,11 @@ public partial class MainWindow : Window
             hardwareMonitor.Changed += change => Dispatcher.BeginInvoke(new Action(() => HardwareChanged(change)));
         }
         catch (Exception e) { HardwareStatusText.Text = "Geräteüberwachung nicht verfügbar: " + e.Message; }
-        Closed += (_, _) => hardwareMonitor?.Dispose();
+        Closed += (_, _) => { hardwareMonitor?.Dispose(); projectWorkspace.Dispose(); projectRecoveryTimer.Stop(); };
         PreviewMouseMove += FileList_PreviewMouseMove;
         PreviewMouseLeftButtonUp += DocumentDrag_MouseUp;
         Sequencer.TrackSelected += track => selectedTrack = track;
+        Sequencer.ViewChanged += () => { if (!isPlaying && !projectWorkspace.IsBusy) multitrackDirty = true; };
         Sequencer.EffectsRequested += track =>
         {
             var restartBlock = blockPlayback is not null;
@@ -121,12 +124,14 @@ public partial class MainWindow : Window
         };
         Sequencer.PlaybackRangeChanged += () =>
         {
+            multitrackDirty = true;
             HintText.Content = Sequencer.GetPlaybackRange() is null ? "Mehrspur-Auswahl aufgehoben." : "Mehrspur-Auswahl gesetzt – der markierte Bereich wird wiederholt.";
             UpdateMultitrackPlaybackRange();
             UpdateSelectionText();
         };
         Sequencer.SeekRequested += async frame =>
         {
+            multitrackDirty = true;
             if (blockPlayback is not { } active) { multitrackMixer?.Seek(frame); return; }
             try { await active.SeekAsync(frame); }
             catch (Exception exception) { BlockPlaybackFailed(active, exception); }
@@ -155,6 +160,8 @@ public partial class MainWindow : Window
         Closing += async (_, e) =>
         {
             if (closeAfterRecording) return;
+            e.Cancel = true;
+            if (projectWorkspace.IsBusy || recoverySaving) return;
             if (hardwareLifetime.HasPending)
             {
                 e.Cancel = true;
@@ -172,7 +179,7 @@ public partial class MainWindow : Window
                 MessageBox.Show(this, "Die Aufnahme wird noch abgeschlossen. Bitte das Programm geöffnet lassen, bis der Datenträger wieder reagiert.", "Aufnahme", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
-            if (!ConfirmProjectDiscard())
+            if (!await ConfirmProjectDiscardAsync())
             {
                 e.Cancel = true;
                 return;
@@ -199,22 +206,27 @@ public partial class MainWindow : Window
                 Close();
                 return;
             }
-            if (!DisposeRecorderForClose() || hardwareLifetime.HasPending) e.Cancel = true;
+            if (DisposeRecorderForClose() && !hardwareLifetime.HasPending) { closeAfterRecording = true; Close(); }
         };
         playbackTimer.Tick += PlaybackTimer_Tick;
         projectRecoveryTimer.Tick += async (_, _) =>
         {
-            if (!multitrackDirty || recoverySaving || multitrack.Tracks.Count == 0) return;
+            if (!multitrackDirty || recoverySaving || projectWorkspace.IsBusy || multitrack.Tracks.Count == 0) return;
             recoverySaving = true;
-            try { await ProjectRecovery.SaveAsync(multitrack, CancellationToken.None); }
+            try { CaptureProjectView(); await ProjectRecovery.SaveAsync(multitrack, multitrackProjectPath, CancellationToken.None); }
             catch { HintText.Content = "Projekt-Autosave fehlgeschlagen; bitte manuell speichern."; }
             finally { recoverySaving = false; }
         };
         projectRecoveryTimer.Start();
-        Loaded += (_, _) =>
+        Loaded += async (_, _) =>
         {
             var startupFile = Environment.GetCommandLineArgs().Skip(1).FirstOrDefault(File.Exists);
-            if (startupFile is not null) OpenAudio(startupFile);
+            if (startupFile is not null)
+            {
+                if (Path.GetExtension(startupFile).Equals(".wbproj", StringComparison.OrdinalIgnoreCase)) await OpenProjectPathAsync(startupFile);
+                else OpenAudio(startupFile);
+            }
+            else await OfferProjectRecoveryAsync();
             // Scan-Dialog nur noch auf Bedarf über den Menüpunkt/„VST3 scannen"-Knopf öffnen.
             // Gespeicherte VST3-Plugins sofort in die Liste laden (kein Neuscan nötig).
             var cached = Vst3EffectCatalog.LoadCache();
@@ -262,57 +274,134 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) == true) OpenAudio(dialog.FileName);
     }
 
-    private void NewProject_Click(object sender, RoutedEventArgs e)
+    private async void NewProject_Click(object sender, RoutedEventArgs e)
     {
-        if (!ConfirmProjectDiscard()) return;
-        StopPlayback();
-        multitrack = new MultitrackProject(); multitrackProjectPath = null; multitrackDirty = false; selectedTrack = null;
+        if (!await ConfirmProjectDiscardAsync()) return;
+        if (!await StopForProjectAsync()) return;
+        projectWorkspace.New(); selectedTrack = null;
         RefreshMultitrack(); MultitrackView_Click(this, new RoutedEventArgs());
         HintText.Content = "Neues Mehrspurprojekt erstellt.";
     }
 
     private async void OpenProject_Click(object sender, RoutedEventArgs e)
     {
-        if (!ConfirmProjectDiscard()) return;
+        if (!await ConfirmProjectDiscardAsync()) return;
         var dialog = new OpenFileDialog { Filter = "WaveBench-Projekt|*.wbproj" };
         if (dialog.ShowDialog(this) != true) return;
-        try
-        {
-            StopPlayback();
-            var loaded = await ProjectStorage.LoadReferenceAsync(dialog.FileName, CancellationToken.None);
-            multitrack = loaded.Project; multitrackProjectPath = dialog.FileName; multitrackDirty = false;
-            selectedTrack = multitrack.Tracks.FirstOrDefault(); RefreshMultitrack(); MultitrackView_Click(this, new RoutedEventArgs());
-            HintText.Content = loaded.Warnings.Count == 0 ? "Projekt geöffnet." : "Projekt geöffnet: " + string.Join(" · ", loaded.Warnings);
-        }
-        catch (Exception exception) { MessageBox.Show(this, "Projekt konnte nicht geöffnet werden.\n\n" + exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+        await OpenProjectPathAsync(dialog.FileName);
     }
 
     private async void SaveProject_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync(false);
     private async void SaveProjectAs_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync(true);
-    private async Task<bool> SaveProjectAsync(bool saveAs)
+    private async void SaveProjectPortable_Click(object sender, RoutedEventArgs e) => await SaveProjectAsync(true, ProjectSaveMode.Portable);
+    private async Task<bool> SaveProjectAsync(bool saveAs, ProjectSaveMode? selectedMode = null)
     {
+        if (!ProjectIoAvailable()) return false;
+        var path = multitrackProjectPath; var mode = selectedMode ?? projectWorkspace.Mode;
         if (saveAs || string.IsNullOrWhiteSpace(multitrackProjectPath))
         {
             var dialog = new SaveFileDialog { Filter = "WaveBench-Projekt|*.wbproj", DefaultExt = ".wbproj", AddExtension = true, FileName = multitrack.Name + ".wbproj" };
             if (dialog.ShowDialog(this) != true) return false;
-            multitrackProjectPath = dialog.FileName;
+            path = dialog.FileName;
         }
         try
         {
+            if (mode == ProjectSaveMode.Portable)
+            {
+                var bytes = multitrack.Tracks.SelectMany(track => track.Clips).Select(clip => clip.Source).Distinct().Sum(source => checked(source.FrameCount * (long)source.Channels * 4));
+                if (bytes > 64L * 1024 * 1024 && MessageBox.Show(this, $"Die portable Kopie benötigt ungefähr {bytes / 1048576d:0.0} MiB Audio-Assets. Fortfahren?", "Portables Projekt", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return false;
+            }
+            CaptureProjectView();
             HintText.Content = "Projekt wird gespeichert …";
-            await ProjectStorage.SaveAsync(multitrackProjectPath!, multitrack, ProjectSaveMode.Reference, CancellationToken.None);
-            multitrack.Name = Path.GetFileNameWithoutExtension(multitrackProjectPath); multitrackDirty = false;
+            await RunProjectIoAsync(async token => { await projectWorkspace.SaveAsync(path!, mode, token); return true; });
             HintText.Content = "Projekt gespeichert: " + Path.GetFileName(multitrackProjectPath); return true;
         }
+        catch (OperationCanceledException) { HintText.Content = "Projektspeichern abgebrochen; bisherige Datei bleibt erhalten."; return false; }
         catch (Exception exception) { MessageBox.Show(this, "Projekt konnte nicht gespeichert werden.\n\n" + exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); return false; }
     }
 
-    private bool ConfirmProjectDiscard()
+    private async Task<bool> ConfirmProjectDiscardAsync()
     {
+        if (!ProjectIoAvailable()) return false;
         if (!multitrackDirty) return true;
         var answer = MessageBox.Show(this, "Das Mehrspurprojekt enthält ungespeicherte Änderungen.\n\nSpeichern?", "WaveBench Pro", MessageBoxButton.YesNoCancel, MessageBoxImage.Warning);
         if (answer == MessageBoxResult.Cancel) return false;
-        if (answer == MessageBoxResult.Yes) { _ = SaveProjectAsync(false); return false; }
+        if (answer == MessageBoxResult.Yes) return await SaveProjectAsync(false) && !multitrackDirty;
+        try { await ProjectRecovery.ResolveAsync(multitrack.Id, CancellationToken.None); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { HintText.Content = "Recovery-Aufräumen zurückgestellt: " + exception.Message; }
+        return true;
+    }
+
+    private bool ProjectIoAvailable()
+    {
+        if (!projectWorkspace.IsBusy && !recoverySaving && !recorder.IsRecording && !recorder.IsFinalizationPending && !hardwareLifetime.HasPending && !recordingStopPending && !preparingMultitrack) return true;
+        HintText.Content = "Bitte laufende Projekt-I/O oder Aufnahme zuerst abschließen."; return false;
+    }
+    private void CaptureProjectView()
+    { Sequencer.CaptureProjectView(); multitrack.LoopPlaybackEnabled = loopPlaybackEnabled; multitrack.LoopStartFrame = loopStartFrame; multitrack.LoopFrameCount = loopFrameCount; }
+    private void ActivateLoadedProject(ProjectStorage.LoadedProject loaded)
+    {
+        foreach (var source in loaded.Documents) if (!openDocuments.Contains(source)) openDocuments.Add(source);
+        selectedTrack = multitrack.Tracks.FirstOrDefault(); loopPlaybackEnabled = multitrack.LoopPlaybackEnabled;
+        loopStartFrame = multitrack.LoopStartFrame; loopFrameCount = multitrack.LoopFrameCount; LoopButton.IsChecked = loopPlaybackEnabled;
+        RefreshMultitrack(); MultitrackView_Click(this, new RoutedEventArgs()); RefreshFileList();
+    }
+    private Task<IReadOnlyDictionary<Guid, string>?> RelinkProjectSourcesAsync(IReadOnlyList<ProjectStorage.SourceIssue> issues, CancellationToken token)
+        => Dispatcher.InvokeAsync(() =>
+        {
+            token.ThrowIfCancellationRequested(); var dialog = new ProjectRelinkDialog(projectProgressOwner ?? this, issues);
+            return dialog.ShowDialog() == true ? dialog.Result : null;
+        }).Task;
+    private async Task OpenProjectPathAsync(string path)
+    {
+        if (!ProjectIoAvailable()) return;
+        try
+        {
+            if (!await StopForProjectAsync()) return;
+            var loaded = await RunProjectIoAsync(token => projectWorkspace.OpenAsync(path, RelinkProjectSourcesAsync, token));
+            ActivateLoadedProject(loaded);
+            HintText.Content = loaded.Relinked ? "Projekt geöffnet; neue Quellenzuordnung bitte speichern." : "Projekt geöffnet.";
+            if (loaded.Warnings.Count > 0) HintText.Content += " " + string.Join(" · ", loaded.Warnings);
+        }
+        catch (OperationCanceledException) { HintText.Content = "Projektöffnen abgebrochen; aktuelles Projekt bleibt erhalten."; }
+        catch (Exception exception) { MessageBox.Show(this, "Projekt konnte nicht geöffnet werden.\n\n" + exception.Message, "WaveBench Pro", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+    private async void RecoverProject_Click(object sender, RoutedEventArgs e) => await OfferProjectRecoveryAsync();
+    private async Task OfferProjectRecoveryAsync()
+    {
+        if (!ProjectIoAvailable()) return;
+        try
+        {
+            var candidates = ProjectRecovery.Find(); if (candidates.Count == 0) return;
+            var dialog = new ProjectRecoveryDialog(this, candidates); dialog.ShowDialog();
+            if (dialog.Selected is not { } selected || dialog.Choice == RecoveryChoice.Later) return;
+            if (dialog.Choice == RecoveryChoice.Discard) { await ProjectRecovery.ResolveAsync(selected.ProjectId, CancellationToken.None); return; }
+            using var selectedLease = ProjectRecovery.Lease(selected);
+            if (!await ConfirmProjectDiscardAsync()) return;
+            if (!await StopForProjectAsync()) return;
+            var loaded = await RunProjectIoAsync(token => projectWorkspace.RecoverAsync(selected, RelinkProjectSourcesAsync, token));
+            ActivateLoadedProject(loaded); HintText.Content = "Projekt wiederhergestellt; Änderungen sind noch nicht manuell gespeichert.";
+        }
+        catch (OperationCanceledException) { HintText.Content = "Wiederherstellen abgebrochen."; }
+        catch (Exception exception) { MessageBox.Show(this, exception.Message, "Projektwiederherstellung", MessageBoxButton.OK, MessageBoxImage.Error); }
+    }
+    private async Task<T> RunProjectIoAsync<T>(Func<CancellationToken, Task<T>> operation)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var progress = new Window { Owner = this, Title = "Projektdatei", Width = 390, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, ShowInTaskbar = false, ResizeMode = ResizeMode.NoResize };
+        var content = new StackPanel { Margin = new Thickness(18) }; content.Children.Add(new TextBlock { Text = "Projekt und Quellen werden verarbeitet …" });
+        content.Children.Add(new ProgressBar { IsIndeterminate = true, Height = 16, Margin = new Thickness(0, 12, 0, 12) });
+        var cancel = new Button { Content = "Abbrechen" }; cancel.Click += (_, _) => { cancellation.Cancel(); cancel.IsEnabled = false; }; content.Children.Add(cancel); progress.Content = content;
+        var finished = false; progress.Closing += (_, args) => { if (!finished) { cancellation.Cancel(); args.Cancel = true; cancel.IsEnabled = false; } };
+        IsEnabled = false; projectProgressOwner = progress; progress.Show();
+        try { return await operation(cancellation.Token); }
+        finally { finished = true; projectProgressOwner = null; IsEnabled = true; progress.Close(); }
+    }
+    private async Task<bool> StopForProjectAsync()
+    {
+        StopPlayback();
+        if (await Task.WhenAny(blockStopPending, Task.Delay(2500)) != blockStopPending || !await blockStopPending || hardwareLifetime.HasPending)
+        { HintText.Content = "Audiofreigabe noch nicht abgeschlossen; aktuelles Projekt bleibt erhalten."; return false; }
         return true;
     }
 
@@ -1176,6 +1265,7 @@ public partial class MainWindow : Window
     private void LoopToggle_Click(object sender, RoutedEventArgs e)
     {
         loopPlaybackEnabled = LoopButton.IsChecked == true;
+        if (MultitrackPanel.Visibility == Visibility.Visible) multitrackDirty = true;
         UpdateMultitrackPlaybackRange();
         HintText.Content = loopPlaybackEnabled ? "Endlosschleife aktiviert."
             : MultitrackPanel.Visibility == Visibility.Visible && Sequencer.GetPlaybackRange().HasValue

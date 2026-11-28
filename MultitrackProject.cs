@@ -8,10 +8,12 @@ public sealed class MultitrackProject
 {
     private const long MaxMixdownBytes = 256L * 1024 * 1024;
     private readonly List<MultitrackTrack> tracks = new();
+    private readonly Dictionary<AudioDocument, Guid> sourceIds = new();
     private int nextTrackNumber = 1;
 
     /// <summary>Stable project identity used by project files and recovery data.</summary>
-    public Guid Id { get; } = Guid.NewGuid();
+    public Guid Id { get; private set; } = Guid.NewGuid();
+    internal void RestoreRecoveryIdentity(Guid id) => Id = id != Guid.Empty ? id : throw new ArgumentException("Ungültige Recovery-Identität.");
     public string Name { get; internal set; } = "Unbenanntes Projekt";
 
     public IReadOnlyList<MultitrackTrack> Tracks => tracks;
@@ -20,11 +22,32 @@ public sealed class MultitrackProject
     private bool explicitTempo;
     public double FramesPerBeat => SampleRate * 60d / Bpm;
 
-    internal static MultitrackProject Restore(int sampleRate, double bpm, string? name = null)
+    // UI-Zustand, der mit dem Projekt persistiert werden soll (Screenpositionen pro Dokument).
+    public long? SelectionStart { get; internal set; }
+    public long? SelectionEnd { get; internal set; }
+    public long? CursorPosition { get; internal set; }
+    public double? VerticalZoom { get; internal set; }
+    public long? ViewportStart { get; internal set; }
+    public long? ViewportFrames { get; internal set; }
+    public double? HorizontalZoom { get; internal set; }
+
+    internal Guid SourceId(AudioDocument source)
+    {
+        if (!sourceIds.TryGetValue(source, out var id)) sourceIds.Add(source, id = Guid.NewGuid());
+        return id;
+    }
+    internal void RegisterSource(AudioDocument source, Guid id) => sourceIds[source] = id;
+
+    // Persistente Loop-Zustände aus dem Player (loopSelection ist transient und bleibt bewusst draußen).
+    public bool LoopPlaybackEnabled { get; internal set; }
+    public long LoopStartFrame { get; internal set; }
+    public long LoopFrameCount { get; internal set; }
+
+    internal static MultitrackProject Restore(int sampleRate, double bpm, string? name = null, Guid? id = null)
     {
         if (sampleRate is < 8000 or > 384000 || !double.IsFinite(bpm) || bpm is < 30 or > 300)
             throw new ArgumentOutOfRangeException(nameof(sampleRate));
-        return new MultitrackProject { SampleRate = sampleRate, Bpm = bpm, explicitTempo = true, Name = string.IsNullOrWhiteSpace(name) ? "Unbenanntes Projekt" : name.Trim() };
+        return new MultitrackProject { Id = id ?? Guid.NewGuid(), SampleRate = sampleRate, Bpm = bpm, explicitTempo = true, Name = string.IsNullOrWhiteSpace(name) ? "Unbenanntes Projekt" : name.Trim() };
     }
 
     public void Add(AudioDocument source)
@@ -81,7 +104,13 @@ public sealed class MultitrackProject
     // closing documents stop playback before changing their backing sources.
     internal MultitrackProject Snapshot()
     {
-        var copy = new MultitrackProject { SampleRate = SampleRate, Bpm = Bpm, explicitTempo = explicitTempo };
+        var copy = new MultitrackProject { Id = Id, Name = Name, SampleRate = SampleRate, Bpm = Bpm, explicitTempo = explicitTempo };
+        copy.SelectionStart = SelectionStart; copy.SelectionEnd = SelectionEnd; copy.CursorPosition = CursorPosition;
+        copy.VerticalZoom = VerticalZoom; copy.ViewportStart = ViewportStart; copy.ViewportFrames = ViewportFrames;
+        copy.HorizontalZoom = HorizontalZoom;
+        foreach (var source in tracks.SelectMany(track => track.Clips).Select(clip => clip.Source).Distinct())
+            copy.RegisterSource(source, SourceId(source));
+        copy.LoopPlaybackEnabled = LoopPlaybackEnabled; copy.LoopStartFrame = LoopStartFrame; copy.LoopFrameCount = LoopFrameCount;
         foreach (var track in tracks)
         {
             var target = copy.AddEmptyTrack();

@@ -1,5 +1,13 @@
 # Changelog
 
+## 09A — project recovery and safe project workflows
+
+- Added recovery selection, verified source relinking and portable project saving.
+- Preserved view/loop state and stable source/project identities, including legacy v2 loading.
+- Made project operations transactional; protected committed files, recovery assets and unsaved edits on cancellation or I/O failure.
+- Added 18 regression cases, including headless WPF checks and injected storage failures.
+- No public release or work order 10 changes.
+
 ## Unreleased — project files
 
 - Added validated, versioned `.wbproj` persistence for multitrack routing,

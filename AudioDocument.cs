@@ -60,7 +60,29 @@ public sealed class AudioDocument : IDisposable
         IsModified = false;
     }
 
-    public string SourcePath { get; private set; }
+    private string sourcePath = string.Empty;
+    private long? sourceLengthAtOpen;
+    private DateTime? sourceWriteAtOpen;
+    public string SourcePath
+    {
+        get => sourcePath;
+        private set
+        {
+            sourcePath = value;
+            var info = string.IsNullOrWhiteSpace(value) ? null : new FileInfo(value);
+            sourceLengthAtOpen = info?.Exists == true ? info.Length : null;
+            sourceWriteAtOpen = info?.Exists == true ? info.LastWriteTimeUtc : null;
+        }
+    }
+    internal bool OriginalSourceChanged
+    {
+        get
+        {
+            if (sourceLengthAtOpen is null) return false;
+            var info = new FileInfo(SourcePath);
+            return !info.Exists || info.Length != sourceLengthAtOpen || info.LastWriteTimeUtc != sourceWriteAtOpen;
+        }
+    }
     /// <summary>
     /// Vollständige Samples für Bearbeitung und Export. Bei einer gestreamten WAV-Datei
     /// wird erst beim expliziten Bearbeitungszugriff materialisiert.
@@ -82,7 +104,9 @@ public sealed class AudioDocument : IDisposable
     internal SpectrogramCache? Spectrogram { get; private set; }
     internal event EventHandler? SpectrogramReady;
     public string DisplayName { get; set; }
-    public bool IsModified { get; private set; }
+    private bool modified;
+    internal long ContentVersion { get; private set; }
+    public bool IsModified { get => modified; private set { modified = value; if (value) ContentVersion++; } }
     public int Channels { get; }
     public int SampleRate { get; }
     public int? OriginalWaveBitsPerSample { get; private set; }
@@ -356,6 +380,11 @@ public sealed class AudioDocument : IDisposable
     internal IAudioSource OpenBlockSource() => IsStreaming
         ? CreateSegmentedSource()
         : new MemoryAudioSource(samples, Channels, SampleRate);
+
+    // Project saves retain immutable memory/segment state before their first await.
+    internal IAudioSource CaptureProjectSource() => IsStreaming
+        ? CreateSegmentedSource()
+        : new MemoryAudioSource(samples.ToArray(), Channels, SampleRate);
 
     private void SaveStreamingUndo()
     {

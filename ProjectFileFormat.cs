@@ -7,7 +7,8 @@ namespace WellenEditor;
 /// <summary>Strict, bounded on-disk representation of a WaveBench multitrack project.</summary>
 internal static class ProjectFileFormat
 {
-    internal const int Version = 2;
+    internal const int Version = 3;
+    internal const int LegacyVersion = 2;
     internal const int MaximumBytes = 4 * 1024 * 1024;
     internal const int MaximumPluginStateBytes = 1024 * 1024;
     private static readonly JsonSerializerOptions Json = new()
@@ -19,7 +20,14 @@ internal static class ProjectFileFormat
     };
 
     internal sealed record Manifest(int FormatVersion, string Name, int SampleRate, double Bpm,
-        Source[] Sources, Track[] Tracks, int BeatsPerBar = 4, int BeatUnit = 4);
+        Source[] Sources, Track[] Tracks, int BeatsPerBar = 4, int BeatUnit = 4, View? View = null,
+        Guid? ProjectId = null, bool Portable = false);
+
+    /// <summary>Persistierte UI-Zustände des Produkts: Loop-Bereich, Auswahl, Cursor, Zoom und Viewport.</summary>
+    internal sealed record View(
+        long? SelectionStart = null, long? SelectionEnd = null, long? CursorFrame = null,
+        double? VerticalZoom = null, long? ViewportStart = null, long? ViewportFrames = null,
+        bool LoopPlaybackEnabled = false, long LoopStartFrame = 0, long LoopFrameCount = 0, double? HorizontalZoom = null);
     internal sealed record Source(Guid Id, string Path, long LengthBytes, string Sha256, bool IsAsset = false);
     internal sealed record Track(Guid Id, string Name, double Gain, double Pan, bool Muted, bool Solo,
         Clip[] Clips, Effect[]? Effects = null);
@@ -44,10 +52,21 @@ internal static class ProjectFileFormat
     internal static Manifest Parse(ReadOnlySpan<byte> bytes)
     {
         if (bytes.Length > MaximumBytes) throw new InvalidDataException("Projektdatei ist zu groß.");
+        using (var document = JsonDocument.Parse(bytes.ToArray(), new JsonDocumentOptions { MaxDepth = 32 })) RejectDuplicateFields(document.RootElement);
         var manifest = JsonSerializer.Deserialize<Manifest>(bytes, Json)
             ?? throw new InvalidDataException("Projektdatei ist leer.");
         Validate(manifest);
         return manifest;
+    }
+    private static void RejectDuplicateFields(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var property in element.EnumerateObject())
+            { if (!names.Add(property.Name)) throw new InvalidDataException("Doppeltes Projektfeld: " + property.Name); RejectDuplicateFields(property.Value); }
+        }
+        else if (element.ValueKind == JsonValueKind.Array) foreach (var value in element.EnumerateArray()) RejectDuplicateFields(value);
     }
 
     internal static Settings From(EffectSettings s) => new(s.GainDb, s.Frequency, s.Q, s.ThresholdDb, s.Ratio, s.AttackMs, s.ReleaseMs, s.MakeupDb);
@@ -59,7 +78,7 @@ internal static class ProjectFileFormat
 
     private static void Validate(Manifest value)
     {
-        if (value.FormatVersion != Version) throw new InvalidDataException("Nicht unterstützte Projektversion.");
+        if (value.FormatVersion is not (Version or LegacyVersion)) throw new InvalidDataException("Nicht unterstützte Projektversion.");
         if (string.IsNullOrWhiteSpace(value.Name) || value.Name.Length > 256 || value.SampleRate is < 8000 or > 384000 ||
             !double.IsFinite(value.Bpm) || value.Bpm is < 30 or > 300 || value.BeatsPerBar is < 1 or > 32 ||
             value.BeatUnit is not (1 or 2 or 4 or 8 or 16) || value.Sources is null || value.Tracks is null ||
@@ -84,10 +103,26 @@ internal static class ProjectFileFormat
             clips = checked(clips + track.Clips.Length); if (clips > 100000) throw new InvalidDataException("Zu viele Clips.");
             foreach (var clip in track.Clips)
                 if (clip is null || clip.Id == Guid.Empty || !ids.Add(clip.Id) || !sourceIds.Contains(clip.SourceId) || clip.StartFrame < 0 ||
-                    clip.SourceOffsetFrames < 0 || clip.SourceLengthFrames is < 0 || !double.IsFinite(clip.DurationScale) || clip.DurationScale is <= 0 or > 100)
+                    clip.SourceOffsetFrames != 0 || clip.SourceLengthFrames is not null || !double.IsFinite(clip.DurationScale) || clip.DurationScale is <= 0 or > 100)
                     throw new InvalidDataException("Ungültiger Projektclip.");
             foreach (var effect in track.Effects ?? Array.Empty<Effect>()) ValidateEffect(effect, ids);
         }
+        if (value.ProjectId == Guid.Empty) throw new InvalidDataException("Ungültige Projektidentität.");
+        if (value.View is { } view) ValidateView(view);
+    }
+
+    private static void ValidateView(View view)
+    {
+        if (view.SelectionStart is < 0 || view.SelectionEnd is < 0 || view.CursorFrame is < 0 ||
+            view.ViewportStart is < 0 || view.ViewportFrames is <= 0 ||
+            view.LoopStartFrame < 0 || view.LoopFrameCount < 0 ||
+            view.SelectionStart.HasValue != view.SelectionEnd.HasValue || view.SelectionEnd < view.SelectionStart ||
+            view.LoopStartFrame > long.MaxValue - view.LoopFrameCount)
+            throw new InvalidDataException("Ungültiger Projektansichtszustand.");
+        if (view.VerticalZoom is { } zoom && (!double.IsFinite(zoom) || zoom is < 0.25 or > 16))
+            throw new InvalidDataException("Ungültiger Projekt-Zoom.");
+        if (view.HorizontalZoom is { } horizontal && (!double.IsFinite(horizontal) || horizontal is < 16 or > 256))
+            throw new InvalidDataException("Ungültiger horizontaler Projekt-Zoom.");
     }
 
     private static void ValidateEffect(Effect effect, HashSet<Guid> ids)

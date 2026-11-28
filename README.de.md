@@ -1,5 +1,7 @@
 # WaveBench Pro
 
+09A ergänzt Wiederherstellen/Verwerfen/Später, die geprüfte Neuzuordnung fehlender Quellen und **Projekt portabel speichern**. Format 3 erhält Ansichts-/Loop-Zustand und liest Format 2. Speichern ist transaktional und abbrechbar; Fehler lassen das bisherige Projekt und seine Datei bestehen. Details: [Projektformat](docs/ProjectFormat.md). Automatisierte Tests ersetzen keine visuelle GUI- oder echte Audiogeräte-Abnahme.
+
 [English](README.md) · [Bedienung](docs/UserGuide.md) · [Architektur](docs/Architecture.md)
 
 Windows-Audioeditor mit klassischer Wellenformansicht und Mehrspur-Sequenzer. Entwickelt mit C#, WPF, .NET 9 und NAudio.

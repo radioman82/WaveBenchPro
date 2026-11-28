@@ -1,5 +1,17 @@
 # User guide
 
+## Project workflows (09A)
+
+The **Projekt** menu provides New, Open, Save, Save As, portable saving and recovery. Save writes a `.wbproj` manifest and required assets. Portable saving copies every source into the adjacent `.assets` directory; move the manifest and that directory together.
+
+When a project source is missing or changed, choose a replacement in the relink dialog. Its recorded length and SHA-256 must match before opening continues. Cancel leaves the current project intact. A relinked project remains modified until saved.
+
+Recovery offers the newest valid unresolved generation for each project. Restore opens a modified project; Save commits it to the chosen project location. Discard resolves the offered recovery, while Later keeps it available. Recovery sources remain protected while the editor owns them.
+
+Saving, opening and recovery report errors without replacing the current project on failure. Cancelling a save preserves the last committed manifest. Save before discarding changes; failed saves or additional edits keep the close/discard operation pending. Project operations require recording and pending audio finalization to finish first.
+
+View selection, cursor, viewport, zoom and loop settings are stored in format v3. Existing v2 projects remain readable. Unused asset files may be retained to protect open documents and undo history.
+
 The beta.3 package supports WAV import and export. Compressed audio formats and ASIO are disabled in this beta profile pending codec licensing review and hardware acceptance. Descriptions of these features elsewhere apply to the ordinary development build.
 
 The interface currently uses German labels, included below.

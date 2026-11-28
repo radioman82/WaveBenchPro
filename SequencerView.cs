@@ -18,6 +18,8 @@ public sealed class SequencerView : UserControl
     private double positionSeconds;
     private double? rangeAnchor;
     private double? rangeEdge;
+    private bool restoringView;
+    public event Action? ViewChanged;
     public event Action? PlaybackRangeChanged;
     public event Action<long>? SeekRequested;
     public (long Start, long Count)? GetPlaybackRange()
@@ -31,6 +33,17 @@ public sealed class SequencerView : UserControl
     public event Action<MultitrackTrack>? TrackSelected;
     public event Action<MultitrackTrack>? RemoveTrackRequested;
     public event Action<MultitrackTrack>? EffectsRequested;
+    internal void CaptureProjectView()
+    {
+        if (project is null) return;
+        var range = GetPlaybackRange();
+        project.SelectionStart = range?.Start;
+        project.SelectionEnd = range is null ? null : checked(range.Value.Start + range.Value.Count);
+        project.CursorPosition = (long)Math.Clamp(Math.Round(positionSeconds * project.SampleRate), 0, long.MaxValue / 2);
+        project.HorizontalZoom = scale.PixelsPerBeat; project.VerticalZoom = scale.VerticalScale;
+        project.ViewportStart = (long)Math.Clamp(horizontal.HorizontalOffset / scale.PixelsPerSecond(project.Bpm) * project.SampleRate, 0, long.MaxValue / 2);
+        project.ViewportFrames = horizontal.ViewportWidth > 0 ? (long)Math.Clamp(horizontal.ViewportWidth / scale.PixelsPerSecond(project.Bpm) * project.SampleRate, 1, long.MaxValue / 2) : null;
+    }
     public double PositionSeconds
     {
         get => positionSeconds;
@@ -51,11 +64,13 @@ public sealed class SequencerView : UserControl
         scale.ZoomHorizontal(factor);
         UpdateExtent();
         horizontal.ScrollToHorizontalOffset(scale.BeatToX(beatAtLeft));
+        ViewChanged?.Invoke();
     }
     public void ZoomVertical(double factor)
     {
         scale.ZoomVertical(factor);
         if (project is not null) SetProject(project);
+        ViewChanged?.Invoke();
     }
 
     public void ResetHorizontalZoom()
@@ -64,12 +79,14 @@ public sealed class SequencerView : UserControl
         scale.ResetHorizontal();
         UpdateExtent();
         horizontal.ScrollToHorizontalOffset(scale.BeatToX(beatAtLeft));
+        ViewChanged?.Invoke();
     }
 
     public void ResetVerticalZoom()
     {
         scale.ResetVertical();
         if (project is not null) SetProject(project);
+        ViewChanged?.Invoke();
     }
 
     public SequencerView()
@@ -84,13 +101,28 @@ public sealed class SequencerView : UserControl
         vertical = new ScrollViewer { Content = grid, VerticalContentAlignment = VerticalAlignment.Top, HorizontalContentAlignment = HorizontalAlignment.Stretch, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled };
         Content = vertical;
         horizontal.SizeChanged += (_, _) => UpdateExtent();
+        horizontal.ScrollChanged += (_, args) => { if (IsLoaded && !restoringView && args.HorizontalChange != 0) ViewChanged?.Invoke(); };
         SizeChanged += (_, _) => UpdateExtent();
         Background = new SolidColorBrush(Color.FromRgb(14, 20, 23));
     }
 
     public void SetProject(MultitrackProject value)
     {
+        var changedProject = !ReferenceEquals(project, value);
         project = value;
+        if (changedProject)
+        {
+            scale.Restore(value.HorizontalZoom ?? 64, value.VerticalZoom ?? 1);
+            rangeAnchor = value.SelectionStart / value.FramesPerBeat; rangeEdge = value.SelectionEnd / value.FramesPerBeat;
+            positionSeconds = (value.CursorPosition ?? 0) / (double)value.SampleRate;
+            timeline.SetPosition(positionSeconds);
+            restoringView = true;
+            Dispatcher.BeginInvoke(new Action(() =>
+            {
+                horizontal.ScrollToHorizontalOffset((value.ViewportStart ?? 0) / (double)value.SampleRate * scale.PixelsPerSecond(value.Bpm));
+                Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.ContextIdle, new Action(() => restoringView = false));
+            }));
+        }
         heads.Children.Clear();
         heads.Children.Add(new TextBlock { Text = "SPUREN", Height = 28, Foreground = Brushes.LightGray, Margin = new Thickness(6, 0, 0, 0) });
         foreach (var track in value.Tracks)
@@ -106,7 +138,7 @@ public sealed class SequencerView : UserControl
             remove.Click += (_, _) => RemoveTrackRequested?.Invoke(track);
             title.Children.Add(remove);
             var name = new TextBox { Text = track.Name, FontSize = 11, Padding = new Thickness(2, 1, 2, 1), Background = Brushes.Transparent, BorderThickness = new Thickness(0), FontWeight = FontWeights.SemiBold };
-            name.TextChanged += (_, _) => track.Name = name.Text;
+            name.TextChanged += (_, _) => { track.Name = name.Text; ProjectChanged?.Invoke(); };
             title.Children.Add(name); panel.Children.Add(title);
             var buttons = new StackPanel { Orientation = Orientation.Horizontal };
             var mute = MixerButton("Stumm", track.Muted, Colors.DarkOrange);
@@ -117,8 +149,8 @@ public sealed class SequencerView : UserControl
                 PaintButton(solo, track.Solo, Colors.Turquoise);
                 timeline.RefreshDrawing();
             }
-            mute.Click += (_, _) => { track.Muted = !track.Muted; RefreshMixerButtons(); };
-            solo.Click += (_, _) => { track.Solo = !track.Solo; RefreshMixerButtons(); };
+            mute.Click += (_, _) => { track.Muted = !track.Muted; RefreshMixerButtons(); ProjectChanged?.Invoke(); };
+            solo.Click += (_, _) => { track.Solo = !track.Solo; RefreshMixerButtons(); ProjectChanged?.Invoke(); };
             buttons.Children.Add(mute); buttons.Children.Add(solo);
             var activeFx = track.Effects.Count(fx => fx.Enabled);
             var fxButton = MixerButton(activeFx > 0 ? $"FX {activeFx}" : "FX", activeFx > 0, Colors.MediumPurple);
@@ -126,8 +158,8 @@ public sealed class SequencerView : UserControl
             fxButton.Click += (_, _) => EffectsRequested?.Invoke(track);
             buttons.Children.Add(fxButton); panel.Children.Add(buttons);
             var sliders = new Grid(); sliders.ColumnDefinitions.Add(new ColumnDefinition()); sliders.ColumnDefinitions.Add(new ColumnDefinition());
-            sliders.Children.Add(new RotaryKnob("Volume", 0, 2, track.Gain, 1, v => track.Gain = v));
-            var pan = new RotaryKnob("Pan", -1, 1, track.Pan, 0, v => track.Pan = v); Grid.SetColumn(pan, 1); sliders.Children.Add(pan);
+            sliders.Children.Add(new RotaryKnob("Volume", 0, 2, track.Gain, 1, v => { track.Gain = v; ProjectChanged?.Invoke(); }));
+            var pan = new RotaryKnob("Pan", -1, 1, track.Pan, 0, v => { track.Pan = v; ProjectChanged?.Invoke(); }); Grid.SetColumn(pan, 1); sliders.Children.Add(pan);
             if (track.Expanded) panel.Children.Add(sliders);
             var border = new Border { Height = TrackHeight(track), BorderBrush = new SolidColorBrush(color), BorderThickness = new Thickness(3, 0, 0, 1), Child = panel, Background = new SolidColorBrush(Color.FromRgb(23, 31, 37)) };
             border.MouseLeftButtonDown += (_, _) => TrackSelected?.Invoke(track);

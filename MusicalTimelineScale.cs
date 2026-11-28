@@ -12,4 +12,5 @@ internal sealed class MusicalTimelineScale
     public void ZoomVertical(double factor) => VerticalScale = Math.Clamp(VerticalScale * factor, .8, 2.5);
     public void ResetHorizontal() => PixelsPerBeat = 64;
     public void ResetVertical() => VerticalScale = 1;
+    internal void Restore(double horizontal, double vertical) { PixelsPerBeat = Math.Clamp(horizontal, 16, 256); VerticalScale = Math.Clamp(vertical, .8, 2.5); }
 }
