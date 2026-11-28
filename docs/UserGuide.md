@@ -2,7 +2,7 @@
 
 ## Project workflows (09A)
 
-The **Projekt** menu provides New, Open, Save, Save As, portable saving and recovery. Save writes a `.wbproj` manifest and required assets. Portable saving copies every source into the adjacent `.assets` directory; move the manifest and that directory together.
+The **Datei** menu provides **Neues Mehrspurprojekt**, **Projekt öffnen**, **Projekt speichern**, **Projekt speichern unter**, **Projekt portabel speichern** and **Projekt wiederherstellen**. Save writes a `.wbproj` manifest and required assets. Portable saving copies every source into the adjacent `.assets` directory; move the manifest and that directory together.
 
 When a project source is missing or changed, choose a replacement in the relink dialog. Its recorded length and SHA-256 must match before opening continues. Cancel leaves the current project intact. A relinked project remains modified until saved.
 
